@@ -2806,7 +2806,18 @@ static void radix_encode_fn(void* arg, uint32_t wid, int64_t start, int64_t end)
             }
             break;
         }
-        case TD_BOOL: {
+        case TD_I16: {
+            const int16_t* d = (const int16_t*)c->data;
+            if (c->desc) {
+                for (int64_t i = start; i < end; i++)
+                    c->keys[i] = ~((uint64_t)((uint16_t)d[i] ^ ((uint16_t)1 << 15)));
+            } else {
+                for (int64_t i = start; i < end; i++)
+                    c->keys[i] = (uint64_t)((uint16_t)d[i] ^ ((uint16_t)1 << 15));
+            }
+            break;
+        }
+        case TD_BOOL: case TD_U8: {
             const uint8_t* d = (const uint8_t*)c->data;
             if (c->desc) {
                 for (int64_t i = start; i < end; i++)
@@ -2837,7 +2848,9 @@ static void radix_encode_fn(void* arg, uint32_t wid, int64_t start, int64_t end)
                     val = (int64_t)(bits ^ mask);
                 } else if (col->type == TD_I32 || col->type == TD_DATE || col->type == TD_TIME) {
                     val = (int64_t)((const int32_t*)td_data(col))[i];
-                } else if (col->type == TD_BOOL) {
+                } else if (col->type == TD_I16) {
+                    val = (int64_t)((const int16_t*)td_data(col))[i];
+                } else if (col->type == TD_BOOL || col->type == TD_U8) {
                     val = (int64_t)((const uint8_t*)td_data(col))[i];
                 } else {
                     val = 0;
@@ -3152,7 +3165,14 @@ static void mk_prescan_fn(void* arg, uint32_t wid,
                 if (v < kmin) kmin = v;
                 if (v > kmax) kmax = v;
             }
-        } else if (col->type == TD_BOOL) {
+        } else if (col->type == TD_I16) {
+            const int16_t* d = (const int16_t*)td_data(col);
+            for (int64_t i = start; i < end; i++) {
+                int64_t v = (int64_t)d[i];
+                if (v < kmin) kmin = v;
+                if (v > kmax) kmax = v;
+            }
+        } else if (col->type == TD_BOOL || col->type == TD_U8) {
             const uint8_t* d = (const uint8_t*)td_data(col);
             for (int64_t i = start; i < end; i++) {
                 int64_t v = (int64_t)d[i];
@@ -3229,7 +3249,9 @@ static void fused_topn_fn(void* arg, uint32_t wid,
                 val = (int64_t)(bits ^ mask);
             } else if (col->type == TD_I32 || col->type == TD_DATE || col->type == TD_TIME) {
                 val = (int64_t)((const int32_t*)td_data(col))[i];
-            } else if (col->type == TD_BOOL) {
+            } else if (col->type == TD_I16) {
+                val = (int64_t)((const int16_t*)td_data(col))[i];
+            } else if (col->type == TD_BOOL || col->type == TD_U8) {
                 val = (int64_t)((const uint8_t*)td_data(col))[i];
             } else {
                 val = 0;
@@ -3429,9 +3451,9 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
         for (uint8_t k = 0; k < n_sort; k++) {
             if (!sort_vecs[k]) { can_radix = false; break; }
             int8_t t = sort_vecs[k]->type;
-            if (t != TD_I64 && t != TD_F64 && t != TD_I32 && t != TD_DATE &&
-                t != TD_SYM &&
-                t != TD_TIME && t != TD_TIMESTAMP) {
+            if (t != TD_I64 && t != TD_F64 && t != TD_I32 && t != TD_I16 &&
+                t != TD_BOOL && t != TD_U8 && t != TD_SYM &&
+                t != TD_DATE && t != TD_TIME && t != TD_TIMESTAMP) {
                 can_radix = false; break;
             }
         }
@@ -3589,6 +3611,18 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                             }
                         } else if (col->type == TD_I32 || col->type == TD_DATE || col->type == TD_TIME) {
                             const int32_t* d = (const int32_t*)td_data(col);
+                            for (int64_t i = 0; i < nrows; i++) {
+                                if (d[i] < kmin) kmin = (int64_t)d[i];
+                                if (d[i] > kmax) kmax = (int64_t)d[i];
+                            }
+                        } else if (col->type == TD_I16) {
+                            const int16_t* d = (const int16_t*)td_data(col);
+                            for (int64_t i = 0; i < nrows; i++) {
+                                if (d[i] < kmin) kmin = (int64_t)d[i];
+                                if (d[i] > kmax) kmax = (int64_t)d[i];
+                            }
+                        } else if (col->type == TD_BOOL || col->type == TD_U8) {
+                            const uint8_t* d = (const uint8_t*)td_data(col);
                             for (int64_t i = 0; i < nrows; i++) {
                                 if (d[i] < kmin) kmin = (int64_t)d[i];
                                 if (d[i] > kmax) kmax = (int64_t)d[i];
@@ -10416,9 +10450,9 @@ static td_t* exec_window(td_graph_t* g, td_op_t* op, td_t* tbl) {
         for (uint8_t k = 0; k < n_sort; k++) {
             if (!sort_vecs[k]) { can_radix = false; break; }
             int8_t t = sort_vecs[k]->type;
-            if (t != TD_I64 && t != TD_F64 && t != TD_I32 && t != TD_DATE &&
-                t != TD_SYM &&
-                t != TD_TIME && t != TD_TIMESTAMP) {
+            if (t != TD_I64 && t != TD_F64 && t != TD_I32 && t != TD_I16 &&
+                t != TD_BOOL && t != TD_U8 && t != TD_SYM &&
+                t != TD_DATE && t != TD_TIME && t != TD_TIMESTAMP) {
                 can_radix = false; break;
             }
         }
@@ -10541,6 +10575,18 @@ static td_t* exec_window(td_graph_t* g, td_op_t* op, td_t* tbl) {
                             }
                         } else if (col->type == TD_I32 || col->type == TD_DATE || col->type == TD_TIME) {
                             const int32_t* d = (const int32_t*)td_data(col);
+                            for (int64_t i = 0; i < nrows; i++) {
+                                if (d[i] < kmin) kmin = (int64_t)d[i];
+                                if (d[i] > kmax) kmax = (int64_t)d[i];
+                            }
+                        } else if (col->type == TD_I16) {
+                            const int16_t* d = (const int16_t*)td_data(col);
+                            for (int64_t i = 0; i < nrows; i++) {
+                                if (d[i] < kmin) kmin = (int64_t)d[i];
+                                if (d[i] > kmax) kmax = (int64_t)d[i];
+                            }
+                        } else if (col->type == TD_BOOL || col->type == TD_U8) {
+                            const uint8_t* d = (const uint8_t*)td_data(col);
                             for (int64_t i = 0; i < nrows; i++) {
                                 if (d[i] < kmin) kmin = (int64_t)d[i];
                                 if (d[i] > kmax) kmax = (int64_t)d[i];
