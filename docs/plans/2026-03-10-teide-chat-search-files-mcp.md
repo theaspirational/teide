@@ -1314,7 +1314,7 @@ cd teidelum && git add src/mcp.rs && git commit -m "mcp: add chat tools — post
 
 **Steps:**
 
-- [ ] Create `teidelum/tests/chat_plan2_integration.rs` with integration tests.
+- [x] Create `teidelum/tests/chat_plan2_integration.rs` with integration tests.
 
 ```rust
 //! Integration tests for Chat Plan 2: Search, Files, MCP Tools.
