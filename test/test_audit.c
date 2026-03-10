@@ -366,16 +366,457 @@ static MunitResult test_sel_group_sort(const void* params, void* data) {
 }
 
 /* -----------------------------------------------------------------------
+ * Category 1: Selection bitmap + JOIN / WINDOW / ASOF
+ * ----------------------------------------------------------------------- */
+
+/* Selection on left table + INNER JOIN on id.
+ * Left: make_audit_table() (id=[1,1,2,2,3], val=[10,20,30,40,50]).
+ * Right: id=[2,3], label=[200,300].
+ * Selection: mask=[0,0,1,1,1] (rows 2,3,4).
+ * INNER JOIN on id → 3 rows (id=2 twice, id=3 once). */
+static MunitResult test_sel_join(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* left = make_audit_table();
+
+    /* Build right table: id=[2,3], label=[200,300] */
+    int64_t rid_data[]   = {2, 3};
+    int64_t rlabel_data[] = {200, 300};
+    td_t* rid_vec   = td_vec_from_raw(TD_I64, rid_data, 2);
+    td_t* rlabel_vec = td_vec_from_raw(TD_I64, rlabel_data, 2);
+    int64_t name_id    = td_sym_intern("id", 2);
+    int64_t name_label = td_sym_intern("label", 5);
+    td_t* right = td_table_new(2);
+    right = td_table_add_col(right, name_id, rid_vec);
+    right = td_table_add_col(right, name_label, rlabel_vec);
+    td_release(rid_vec);
+    td_release(rlabel_vec);
+
+    td_graph_t* g = td_graph_new(left);
+
+    uint8_t mask[] = {0, 0, 1, 1, 1};
+    td_t* sel = make_selection(mask, 5);
+    munit_assert_false(TD_IS_ERR(sel));
+    td_retain(sel);
+    g->selection = sel;
+
+    td_op_t* left_op  = td_const_table(g, left);
+    td_op_t* right_op = td_const_table(g, right);
+    td_op_t* lk = td_scan(g, "id");
+    td_op_t* lk_arr[] = { lk };
+    td_op_t* rk_arr[] = { lk };
+    td_op_t* join_op = td_join(g, left_op, lk_arr, right_op, rk_arr, 1, 0);
+
+    td_t* result = td_execute(g, join_op);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 3);
+
+    td_release(result);
+    td_release(sel);
+    td_release(right);
+    td_graph_free(g);
+    td_release(left);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Selection + WINDOW ROW_NUMBER() OVER (ORDER BY val ASC).
+ * Table: make_audit_table(). Selection: mask=[1,1,1,0,0] (3 rows).
+ * Result: nrows==3, with row numbers 1,2,3. */
+static MunitResult test_sel_window(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+
+    uint8_t mask[] = {1, 1, 1, 0, 0};
+    td_t* sel = make_selection(mask, 5);
+    munit_assert_false(TD_IS_ERR(sel));
+    td_retain(sel);
+    g->selection = sel;
+
+    td_op_t* tbl_op = td_const_table(g, tbl);
+    td_op_t* val_op = td_scan(g, "val");
+    td_op_t* orders[] = { val_op };
+    uint8_t order_descs[] = { 0 };
+    uint8_t func_kinds[] = { TD_WIN_ROW_NUMBER };
+    td_op_t* func_inputs[] = { val_op };
+    int64_t func_params[] = { 0 };
+    td_op_t* win = td_window_op(g, tbl_op,
+                                NULL, 0,
+                                orders, order_descs, 1,
+                                func_kinds, func_inputs, func_params, 1,
+                                TD_FRAME_ROWS,
+                                TD_BOUND_UNBOUNDED_PRECEDING,
+                                TD_BOUND_UNBOUNDED_FOLLOWING,
+                                0, 0);
+
+    td_t* result = td_execute(g, win);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 3);
+
+    td_release(result);
+    td_release(sel);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Selection + inner ASOF JOIN.
+ * Left: time=[100,200,300,400,500], val=[1.0..5.0]. Selection: [1,1,0,0,1].
+ * Right: time=[90,150,450], bid=[0.9,1.5,4.5].
+ * Inner ASOF → nrows==3. */
+static MunitResult test_sel_asof_join(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    /* Build left table: time(I64), val(F64) */
+    int64_t ltime_data[] = {100, 200, 300, 400, 500};
+    double  lval_data[]  = {1.0, 2.0, 3.0, 4.0, 5.0};
+    td_t* ltime_vec = td_vec_from_raw(TD_I64, ltime_data, 5);
+    td_t* lval_vec  = td_vec_from_raw(TD_F64, lval_data, 5);
+    int64_t name_time = td_sym_intern("time", 4);
+    int64_t name_val  = td_sym_intern("val", 3);
+    td_t* left = td_table_new(2);
+    left = td_table_add_col(left, name_time, ltime_vec);
+    left = td_table_add_col(left, name_val, lval_vec);
+    td_release(ltime_vec);
+    td_release(lval_vec);
+
+    /* Build right table: time(I64), bid(F64) */
+    int64_t rtime_data[] = {90, 150, 450};
+    double  rbid_data[]  = {0.9, 1.5, 4.5};
+    td_t* rtime_vec = td_vec_from_raw(TD_I64, rtime_data, 3);
+    td_t* rbid_vec  = td_vec_from_raw(TD_F64, rbid_data, 3);
+    int64_t name_bid = td_sym_intern("bid", 3);
+    td_t* right = td_table_new(2);
+    right = td_table_add_col(right, name_time, rtime_vec);
+    right = td_table_add_col(right, name_bid, rbid_vec);
+    td_release(rtime_vec);
+    td_release(rbid_vec);
+
+    td_graph_t* g = td_graph_new(left);
+
+    uint8_t mask[] = {1, 1, 0, 0, 1};
+    td_t* sel = make_selection(mask, 5);
+    munit_assert_false(TD_IS_ERR(sel));
+    td_retain(sel);
+    g->selection = sel;
+
+    td_op_t* left_op  = td_const_table(g, left);
+    td_op_t* right_op = td_const_table(g, right);
+    td_op_t* tkey = td_scan(g, "time");
+    td_op_t* aj = td_asof_join(g, left_op, right_op, tkey, NULL, 0, 0);
+
+    td_t* result = td_execute(g, aj);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 3);
+
+    td_release(result);
+    td_release(sel);
+    td_release(right);
+    td_graph_free(g);
+    td_release(left);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* -----------------------------------------------------------------------
+ * Category 1: Chained selection + boundary cases
+ * ----------------------------------------------------------------------- */
+
+/* Two selections ANDed: mask_a=[0,0,1,1,1,1,0,1,1,0], mask_b=[1,1,1,1,1,1,0,0,0,0].
+ * AND → [0,0,1,1,1,1,0,0,0,0] → rows 2,3,4,5.
+ * GROUP BY id, SUM(val) → 2 groups {2:70, 3:110}. */
+static MunitResult test_sel_chained(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table_10();
+
+    td_graph_t* g = td_graph_new(tbl);
+
+    uint8_t mask_a[] = {0, 0, 1, 1, 1, 1, 0, 1, 1, 0};
+    uint8_t mask_b[] = {1, 1, 1, 1, 1, 1, 0, 0, 0, 0};
+    td_t* sel_a = make_selection(mask_a, 10);
+    td_t* sel_b = make_selection(mask_b, 10);
+    td_t* sel_and = td_sel_and(sel_a, sel_b);
+    munit_assert_false(TD_IS_ERR(sel_and));
+    td_retain(sel_and);
+    g->selection = sel_and;
+    td_release(sel_a);
+    td_release(sel_b);
+
+    td_op_t* key = td_scan(g, "id");
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* keys[] = { key };
+    td_op_t* agg_ins[] = { val };
+    uint16_t agg_ops[] = { OP_SUM };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 1);
+    td_t* result = td_execute(g, grp);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 2);
+
+    td_release(result);
+    td_release(sel_and);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* All rows filtered out (mask all zeros). GROUP BY → 0-row result. */
+static MunitResult test_sel_all_filtered(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+
+    uint8_t mask[] = {0, 0, 0, 0, 0};
+    td_t* sel = make_selection(mask, 5);
+    munit_assert_false(TD_IS_ERR(sel));
+    td_retain(sel);
+    g->selection = sel;
+
+    td_op_t* key = td_scan(g, "id");
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* keys[] = { key };
+    td_op_t* agg_ins[] = { val };
+    uint16_t agg_ops[] = { OP_SUM };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 1);
+    td_t* result = td_execute(g, grp);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(td_table_nrows(result), ==, 0);
+
+    td_release(result);
+    td_release(sel);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* All rows pass (mask all ones). GROUP BY id, SUM(val) → 3 groups, total=150. */
+static MunitResult test_sel_none_filtered(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+
+    uint8_t mask[] = {1, 1, 1, 1, 1};
+    td_t* sel = make_selection(mask, 5);
+    munit_assert_false(TD_IS_ERR(sel));
+    td_retain(sel);
+    g->selection = sel;
+
+    td_op_t* key = td_scan(g, "id");
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* keys[] = { key };
+    td_op_t* agg_ins[] = { val };
+    uint16_t agg_ops[] = { OP_SUM };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 1);
+    td_t* result = td_execute(g, grp);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 3);
+
+    /* Sum all values across groups */
+    td_t* sum_col = td_table_get_col_idx(result, 1);
+    int64_t total = 0;
+    for (int64_t i = 0; i < 3; i++) {
+        total += ((int64_t*)td_data(sum_col))[i];
+    }
+    munit_assert_int(total, ==, 150);
+
+    td_release(result);
+    td_release(sel);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* -----------------------------------------------------------------------
+ * Category 1: FILTER lazy/eager + HAVING fusion
+ * ----------------------------------------------------------------------- */
+
+/* FILTER(table, id>1) → lazy path creates TD_SEL. Verify nrows==3. */
+static MunitResult test_filter_lazy(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* tbl_op = td_const_table(g, tbl);
+    td_op_t* id_col = td_scan(g, "id");
+    td_op_t* one = td_const_i64(g, 1);
+    td_op_t* pred = td_gt(g, id_col, one);
+    td_op_t* filt = td_filter(g, tbl_op, pred);
+
+    td_t* result = td_execute(g, filt);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 3);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Chained FILTER: FILTER(FILTER(table, id>1), val<50).
+ * id>1: rows (2,30),(2,40),(3,50). val<50: (2,30),(2,40) → nrows==2. */
+static MunitResult test_filter_lazy_chained(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* tbl_op = td_const_table(g, tbl);
+    td_op_t* id_col = td_scan(g, "id");
+    td_op_t* val_col = td_scan(g, "val");
+    td_op_t* one = td_const_i64(g, 1);
+    td_op_t* fifty = td_const_i64(g, 50);
+    td_op_t* pred1 = td_gt(g, id_col, one);
+    td_op_t* filt1 = td_filter(g, tbl_op, pred1);
+    td_op_t* pred2 = td_lt(g, val_col, fifty);
+    td_op_t* filt2 = td_filter(g, filt1, pred2);
+
+    td_t* result = td_execute(g, filt2);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 2);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* HAVING fusion: GROUP BY id, SUM(val) → FILTER(GROUP, sum>40).
+ * Groups: {1:30, 2:70, 3:50}. HAVING >40 → {2:70, 3:50} → nrows==2. */
+static MunitResult test_having_fusion(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* key = td_scan(g, "id");
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* keys[] = { key };
+    td_op_t* agg_ins[] = { val };
+    uint16_t agg_ops[] = { OP_SUM };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 1);
+    td_op_t* forty = td_const_i64(g, 40);
+    /* After GROUP BY, SUM(val) column is named "val_sum" */
+    td_op_t* sum_scan = td_scan(g, "val_sum");
+    td_op_t* pred = td_gt(g, sum_scan, forty);
+    td_op_t* having = td_filter(g, grp, pred);
+
+    td_t* result = td_execute(g, having);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 2);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* HAVING with selection: 10-row table + selection + GROUP + HAVING.
+ * Selection: mask=[0,0,1,1,1,1,0,1,1,0] → rows 2..5,7,8.
+ * id=[2,2,3,3,2,3], val=[30,40,50,60,80,90].
+ * GROUP BY id, SUM(val) → {2: 30+40+80=150, 3: 50+60+90=200}.
+ * HAVING sum>160 → {3:200} → nrows==1. */
+static MunitResult test_having_with_selection(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table_10();
+
+    td_graph_t* g = td_graph_new(tbl);
+
+    uint8_t mask[] = {0, 0, 1, 1, 1, 1, 0, 1, 1, 0};
+    td_t* sel = make_selection(mask, 10);
+    munit_assert_false(TD_IS_ERR(sel));
+    td_retain(sel);
+    g->selection = sel;
+
+    td_op_t* key = td_scan(g, "id");
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* keys[] = { key };
+    td_op_t* agg_ins[] = { val };
+    uint16_t agg_ops[] = { OP_SUM };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 1);
+    td_op_t* threshold = td_const_i64(g, 160);
+    /* After GROUP BY, SUM(val) column is named "val_sum" */
+    td_op_t* sum_scan = td_scan(g, "val_sum");
+    td_op_t* pred = td_gt(g, sum_scan, threshold);
+    td_op_t* having = td_filter(g, grp, pred);
+
+    td_t* result = td_execute(g, having);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 1);
+
+    td_release(result);
+    td_release(sel);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* -----------------------------------------------------------------------
  * Test array + suite registration
  * ----------------------------------------------------------------------- */
 
 static MunitTest audit_tests[] = {
-    { "/smoke",            test_audit_smoke,       NULL, NULL, 0, NULL },
-    { "/sel_group_sum",    test_sel_group_sum,     NULL, NULL, 0, NULL },
-    { "/sel_group_count",  test_sel_group_count,   NULL, NULL, 0, NULL },
-    { "/sel_group_scalar", test_sel_group_scalar,  NULL, NULL, 0, NULL },
-    { "/sel_sort",         test_sel_sort,          NULL, NULL, 0, NULL },
-    { "/sel_group_sort",   test_sel_group_sort,    NULL, NULL, 0, NULL },
+    { "/smoke",                  test_audit_smoke,            NULL, NULL, 0, NULL },
+    { "/sel_group_sum",          test_sel_group_sum,          NULL, NULL, 0, NULL },
+    { "/sel_group_count",        test_sel_group_count,        NULL, NULL, 0, NULL },
+    { "/sel_group_scalar",       test_sel_group_scalar,       NULL, NULL, 0, NULL },
+    { "/sel_sort",               test_sel_sort,               NULL, NULL, 0, NULL },
+    { "/sel_group_sort",         test_sel_group_sort,         NULL, NULL, 0, NULL },
+    /* Task 4: Selection + JOIN / WINDOW / ASOF */
+    { "/sel_join",               test_sel_join,               NULL, NULL, 0, NULL },
+    { "/sel_window",             test_sel_window,             NULL, NULL, 0, NULL },
+    { "/sel_asof_join",          test_sel_asof_join,          NULL, NULL, 0, NULL },
+    /* Task 5: Chained selection + boundary cases */
+    { "/sel_chained",            test_sel_chained,            NULL, NULL, 0, NULL },
+    { "/sel_all_filtered",       test_sel_all_filtered,       NULL, NULL, 0, NULL },
+    { "/sel_none_filtered",      test_sel_none_filtered,      NULL, NULL, 0, NULL },
+    /* Task 6: FILTER lazy/eager + HAVING fusion */
+    { "/filter_lazy",            test_filter_lazy,            NULL, NULL, 0, NULL },
+    { "/filter_lazy_chained",    test_filter_lazy_chained,    NULL, NULL, 0, NULL },
+    { "/having_fusion",          test_having_fusion,          NULL, NULL, 0, NULL },
+    { "/having_with_selection",  test_having_with_selection,  NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 
