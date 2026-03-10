@@ -331,7 +331,7 @@ CREATE TABLE files (
 
 **Steps:**
 
-- [ ] Create `teidelum/src/chat/files.rs` with the file upload handler.
+- [x] Create `teidelum/src/chat/files.rs` with the file upload handler.
 
 ```rust
 use crate::chat::auth::Claims;
@@ -588,7 +588,7 @@ pub async fn files_upload(
 }
 ```
 
-- [ ] Add `pub mod files;` to `teidelum/src/chat/mod.rs`.
+- [x] Add `pub mod files;` to `teidelum/src/chat/mod.rs`.
 
 The updated `mod.rs`:
 
