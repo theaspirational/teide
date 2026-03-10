@@ -6098,6 +6098,10 @@ static td_t* exec_group(td_graph_t* g, td_op_t* op, td_t* tbl,
         td_t* result = td_table_new(n_aggs);
         if (!result || TD_IS_ERR(result)) {
             da_accum_free(&sc_acc[0]); scratch_free(sc_hdr);
+            for (uint8_t a = 0; a < n_aggs; a++)
+                if (agg_owned[a] && agg_vecs[a]) td_release(agg_vecs[a]);
+            for (uint8_t k = 0; k < n_keys; k++)
+                if (key_owned[k] && key_vecs[k]) td_release(key_vecs[k]);
             return result ? result : TD_ERR_PTR(TD_ERR_OOM);
         }
 
@@ -6505,6 +6509,10 @@ da_path:;
             td_t* result = td_table_new(total_cols);
             if (!result || TD_IS_ERR(result)) {
                 da_accum_free(&accums[0]); scratch_free(accums_hdr);
+                for (uint8_t a = 0; a < n_aggs; a++)
+                    if (agg_owned[a] && agg_vecs[a]) td_release(agg_vecs[a]);
+                for (uint8_t k = 0; k < n_keys; k++)
+                    if (key_owned[k] && key_vecs[k]) td_release(key_vecs[k]);
                 return result ? result : TD_ERR_PTR(TD_ERR_OOM);
             }
 
@@ -6838,8 +6846,10 @@ ht_path:;
 
 sequential_fallback:;
     /* Sequential path using row-layout HT */
-    if (!group_ht_init(&single_ht, ht_cap, &ght_layout))
-        return TD_ERR_PTR(TD_ERR_OOM);
+    if (!group_ht_init(&single_ht, ht_cap, &ght_layout)) {
+        result = TD_ERR_PTR(TD_ERR_OOM);
+        goto cleanup;
+    }
     group_rows_range(&single_ht, key_data, key_types, key_attrs, agg_vecs, 0, nrows);
 
     final_ht = &single_ht;

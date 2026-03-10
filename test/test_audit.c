@@ -1324,6 +1324,141 @@ static MunitResult test_filter_reorder_correctness(const void* params, void* dat
  * ----------------------------------------------------------------------- */
 
 /* -----------------------------------------------------------------------
+ * Task 12: Detailed exec_group / exec_join / sel_compact memory audit
+ * -----------------------------------------------------------------------
+ *
+ * EXEC_GROUP (lines 5712-7049) — scratch_alloc / scratch_calloc sites:
+ *
+ * 1. sc_hdr (line 5966): scratch_calloc for scalar accumulator array.
+ *    Freed: alloc_ok=false (6007), OOM (6100), normal (6110).
+ *    STATUS: SAFE
+ *
+ * 2. Per-worker sc_acc[w].{_h_sum,_h_min,_h_max,_h_sumsq,_h_count}
+ *    (lines 5974-6003): freed via da_accum_free() on alloc_ok=false
+ *    (6006), OOM (6100), normal (6110).
+ *    STATUS: SAFE
+ *
+ * 3. accums_hdr (line 6275): scratch_calloc for DA accumulator array.
+ *    Freed: alloc_ok=false (6318), OOM (6507->FIXED), normal (6567).
+ *    STATUS: SAFE
+ *
+ * 4. Per-worker accums[w].{_h_sum,_h_min,_h_max,_h_sumsq,_h_count}
+ *    (lines 6282-6313): freed via da_accum_free() on alloc_ok=false
+ *    (6316-6317), normal (6491-6492 for w>0, 6567 for w==0).
+ *    STATUS: SAFE
+ *
+ * 5. Dense compaction arrays _h_dsum, _h_dmin, _h_dmax, _h_dsq, _h_dcnt
+ *    (lines 6536-6540): freed at 6563-6565. Only reachable after
+ *    td_table_new succeeds, so OOM before these is not an issue.
+ *    STATUS: SAFE
+ *
+ * 6. radix_bufs_hdr (line 6616): scratch_calloc for radix partition bufs.
+ *    Freed: OOM fallback (6664,6674), cancel (7034), cleanup (7034).
+ *    STATUS: SAFE
+ *
+ * 7. Per-buf radix_bufs[i]._hdr (line 6635): freed in cleanup (7034),
+ *    OOM fallback (6663,6674), cancel (6407-6410).
+ *    STATUS: SAFE
+ *
+ * 8. part_hts_hdr (line 6671): scratch_calloc for partition hash tables.
+ *    Freed: cleanup (7041).
+ *    STATUS: SAFE
+ *
+ * 9. name_dyn_hdr (line 6817): scratch_alloc for long column names.
+ *    Freed: immediately after use (6828).
+ *    STATUS: SAFE
+ *
+ * EXEC_GROUP — td_retain / td_release pairs:
+ *
+ * 10. key_owned[k] / key_vecs[k] (lines 5830-5831): expression keys
+ *     retained via exec_node. Released: broadcast OOM (5909-5911),
+ *     scalar exit (6113-6114), DA exit (6570-6571), cleanup (7045-7046).
+ *     STATUS: SAFE (after fix)
+ *
+ * 11. agg_owned[a] / agg_vecs[a] (lines 5877,5887): expression aggs.
+ *     Released: broadcast OOM (5906-5908), scalar exit (6111-6112),
+ *     DA exit (6568-6569), cleanup (7043-7044).
+ *     STATUS: SAFE (after fix)
+ *
+ * 12. src_col retain/release (lines 5769-5771): factorized shortcut.
+ *     Released immediately after td_table_add_col.
+ *     STATUS: SAFE
+ *
+ * 13. cnt_col retain/release (lines 5778,5786): factorized shortcut.
+ *     Released immediately after td_table_add_col. On error, result
+ *     is released (5788-5789).
+ *     STATUS: SAFE
+ *
+ * BUGS FOUND AND FIXED:
+ *
+ * BUG A (line ~6099): Scalar path — td_table_new() failure returned
+ *   directly without freeing agg_owned[]/key_owned[] expression vectors.
+ *   FIX: Added agg_owned/key_owned cleanup before return.
+ *
+ * BUG B (line ~6510): DA path — td_table_new() failure returned
+ *   directly without freeing agg_owned[]/key_owned[] expression vectors.
+ *   FIX: Added agg_owned/key_owned cleanup before return.
+ *
+ * BUG C (line ~6842): Sequential fallback — group_ht_init() failure
+ *   returned directly without freeing agg_owned[]/key_owned[].
+ *   FIX: Changed bare return to `goto cleanup` pattern.
+ *
+ * EXEC_JOIN (lines 8300-8911) — allocation sites:
+ *
+ * 14. r_hash_hdr, l_hash_hdr (lines 8356-8360): scratch_alloc for
+ *     hash arrays. Freed: OOM (8362-8363), after partition (8388-8389).
+ *     STATUS: SAFE
+ *
+ * 15. r_parts_hdr, l_parts_hdr (lines 8382-8387): partition arrays.
+ *     Freed: OOM (8392-8401), cancel (8410), normal (8495-8496).
+ *     STATUS: SAFE
+ *
+ * 16. matched_right_hdr (line 8416): scratch_calloc for FULL OUTER.
+ *     Freed: OOM (8424,8445), cancel (8484), cleanup (8906).
+ *     STATUS: SAFE
+ *
+ * 17. pcounts_hdr, pp_meta_hdr (lines 8431-8436): per-partition
+ *     count/metadata. Freed: OOM (8438-8439), cancel (8483),
+ *     normal (8561-8562).
+ *     STATUS: SAFE
+ *
+ * 18. l_idx_hdr, r_idx_hdr (lines 8511-8512, 8719-8720): output pair
+ *     arrays. Freed: OOM (8514-8515), cleanup (8903-8904).
+ *     STATUS: SAFE
+ *
+ * 19. ht_next_hdr, ht_heads_hdr (lines 8574-8577): chained HT arrays.
+ *     Freed: OOM (8579), cleanup (8901-8902).
+ *     STATUS: SAFE
+ *
+ * 20. counts_hdr (line 8665): morsel count array.
+ *     Freed: OOM (8668 implicit in join_cleanup), cleanup (8905).
+ *     STATUS: SAFE
+ *
+ * 21. sjoin_sel, asp_sel (lines 8601,8649): td_sel_new for semijoin.
+ *     Released: cleanup (8907-8908).
+ *     STATUS: SAFE
+ *
+ * SEL_COMPACT (lines 2328-2480) — allocation sites:
+ *
+ * 22. idx_hdr (line 2365): scratch_alloc for match_idx.
+ *     Freed: OOM in td_table_new (2393), normal (2478).
+ *     On scratch_alloc failure: returns tbl with td_retain (2367), safe.
+ *     STATUS: SAFE
+ *
+ * 23. new_cols[c] via td_vec_new (line 2417): output column vectors.
+ *     Released: td_release after td_table_add_col (2475). On failure,
+ *     new_cols[c]=NULL and skipped.
+ *     STATUS: SAFE
+ *
+ * SUMMARY: 3 bugs found (all in exec_group), all fixed.
+ *   - All three were missing agg_owned[]/key_owned[] cleanup on
+ *     OOM-triggered early returns from the scalar, DA, and sequential
+ *     fallback paths.
+ *   - exec_join: all paths SAFE (uses join_cleanup label consistently).
+ *   - sel_compact: all paths SAFE (single allocation, single free).
+ * ----------------------------------------------------------------------- */
+
+/* -----------------------------------------------------------------------
  * Test array + suite registration
  * ----------------------------------------------------------------------- */
 
