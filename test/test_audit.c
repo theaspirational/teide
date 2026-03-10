@@ -794,6 +794,337 @@ static MunitResult test_having_with_selection(const void* params, void* data) {
 }
 
 /* -----------------------------------------------------------------------
+ * Category 2: GROUP BY fallback path tests (no selection bitmap)
+ * ----------------------------------------------------------------------- */
+
+/* Small table GROUP BY (sequential path). 3 groups, total sum = 150. */
+static MunitResult test_group_small(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* key = td_scan(g, "id");
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* keys[] = { key };
+    td_op_t* agg_ins[] = { val };
+    uint16_t agg_ops[] = { OP_SUM };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 1);
+    td_t* result = td_execute(g, grp);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 3);
+
+    /* Verify total sum across all groups is 150 */
+    td_t* sum_col = td_table_get_col_idx(result, 1);
+    int64_t total = 0;
+    for (int64_t i = 0; i < 3; i++) {
+        total += ((int64_t*)td_data(sum_col))[i];
+    }
+    munit_assert_int(total, ==, 150);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* GROUP BY with 4 aggregates: SUM, COUNT, MIN, MAX. ncols==5, nrows==3. */
+static MunitResult test_group_multi_agg(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* key = td_scan(g, "id");
+    td_op_t* v1 = td_scan(g, "val");
+    td_op_t* v2 = td_scan(g, "val");
+    td_op_t* v3 = td_scan(g, "val");
+    td_op_t* v4 = td_scan(g, "val");
+    td_op_t* keys[] = { key };
+    td_op_t* agg_ins[] = { v1, v2, v3, v4 };
+    uint16_t agg_ops[] = { OP_SUM, OP_COUNT, OP_MIN, OP_MAX };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 4);
+    td_t* result = td_execute(g, grp);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 3);
+    munit_assert_int(td_table_ncols(result), ==, 5);  /* id + 4 aggs */
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* GROUP BY val (each row unique group). COUNT(val). nrows==5. */
+static MunitResult test_group_single_row_groups(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* val_key = td_scan(g, "val");
+    td_op_t* val_agg = td_scan(g, "val");
+    td_op_t* keys[] = { val_key };
+    td_op_t* agg_ins[] = { val_agg };
+    uint16_t agg_ops[] = { OP_COUNT };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 1);
+    td_t* result = td_execute(g, grp);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 5);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* -----------------------------------------------------------------------
+ * Category 2: SORT / JOIN / FILTER fallback tests (no selection bitmap)
+ * ----------------------------------------------------------------------- */
+
+/* Multi-column sort: SORT BY id DESC, val ASC.
+ * Expected: ids=[3,2,2,1,1], within id=2 vals=[30,40], within id=1 vals=[10,20]. */
+static MunitResult test_sort_small(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* tbl_op = td_const_table(g, tbl);
+    td_op_t* k1 = td_scan(g, "id");
+    td_op_t* k2 = td_scan(g, "val");
+    td_op_t* keys[] = { k1, k2 };
+    uint8_t descs[] = { 1, 0 };        /* id DESC, val ASC */
+    uint8_t nulls_first[] = { 0, 0 };
+    td_op_t* sort_op = td_sort_op(g, tbl_op, keys, descs, nulls_first, 2);
+
+    td_t* result = td_execute(g, sort_op);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 5);
+
+    int64_t name_id  = td_sym_intern("id", 2);
+    int64_t name_val = td_sym_intern("val", 3);
+    td_t* id_col  = td_table_get_col(result, name_id);
+    td_t* val_col = td_table_get_col(result, name_val);
+    int64_t* ids  = (int64_t*)td_data(id_col);
+    int64_t* vals = (int64_t*)td_data(val_col);
+
+    /* ids should be [3,2,2,1,1] */
+    munit_assert_int(ids[0], ==, 3);
+    munit_assert_int(ids[1], ==, 2);
+    munit_assert_int(ids[2], ==, 2);
+    munit_assert_int(ids[3], ==, 1);
+    munit_assert_int(ids[4], ==, 1);
+
+    /* within id=2: vals=[30,40] (ASC) */
+    munit_assert_int(vals[1], ==, 30);
+    munit_assert_int(vals[2], ==, 40);
+
+    /* within id=1: vals=[10,20] (ASC) */
+    munit_assert_int(vals[3], ==, 10);
+    munit_assert_int(vals[4], ==, 20);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* INNER JOIN: Left=make_audit_table(), Right: id=[1,2], x=[100,200].
+ * id=1 matches 2 left rows, id=2 matches 2 left rows → 4 result rows. */
+static MunitResult test_join_small(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* left = make_audit_table();
+
+    /* Build right table: id=[1,2], x=[100,200] */
+    int64_t rid_data[] = {1, 2};
+    int64_t rx_data[]  = {100, 200};
+    td_t* rid_vec = td_vec_from_raw(TD_I64, rid_data, 2);
+    td_t* rx_vec  = td_vec_from_raw(TD_I64, rx_data, 2);
+    int64_t name_id = td_sym_intern("id", 2);
+    int64_t name_x  = td_sym_intern("x", 1);
+    td_t* right = td_table_new(2);
+    right = td_table_add_col(right, name_id, rid_vec);
+    right = td_table_add_col(right, name_x, rx_vec);
+    td_release(rid_vec);
+    td_release(rx_vec);
+
+    td_graph_t* g = td_graph_new(left);
+    td_op_t* left_op  = td_const_table(g, left);
+    td_op_t* right_op = td_const_table(g, right);
+    td_op_t* lk = td_scan(g, "id");
+    td_op_t* lk_arr[] = { lk };
+    td_op_t* rk_arr[] = { lk };
+    td_op_t* join_op = td_join(g, left_op, lk_arr, right_op, rk_arr, 1, 0);
+
+    td_t* result = td_execute(g, join_op);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 4);
+
+    td_release(result);
+    td_release(right);
+    td_graph_free(g);
+    td_release(left);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Filter on vector input (eager path). val > 30 → 2 rows (40, 50). */
+static MunitResult test_filter_eager(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* threshold = td_const_i64(g, 30);
+    td_op_t* pred = td_gt(g, val, threshold);
+    td_op_t* filtered = td_filter(g, val, pred);
+    td_op_t* cnt = td_count(g, filtered);
+
+    td_t* result = td_execute(g, cnt);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->i64, ==, 2);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* -----------------------------------------------------------------------
+ * Category 3: Error path edge cases (empty tables)
+ * ----------------------------------------------------------------------- */
+
+/* Empty table (0 rows): GROUP BY id, SUM(val) → should not crash. */
+static MunitResult test_group_empty_table(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    td_t* id_vec  = td_vec_new(TD_I64, 0);
+    td_t* val_vec = td_vec_new(TD_I64, 0);
+    int64_t name_id  = td_sym_intern("id", 2);
+    int64_t name_val = td_sym_intern("val", 3);
+    td_t* tbl = td_table_new(2);
+    tbl = td_table_add_col(tbl, name_id, id_vec);
+    tbl = td_table_add_col(tbl, name_val, val_vec);
+    td_release(id_vec);
+    td_release(val_vec);
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* key = td_scan(g, "id");
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* keys[] = { key };
+    td_op_t* agg_ins[] = { val };
+    uint16_t agg_ops[] = { OP_SUM };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 1);
+    td_t* result = td_execute(g, grp);
+    /* Accept either empty result or error — just must not crash */
+    if (result && !TD_IS_ERR(result)) {
+        td_release(result);
+    }
+
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Empty 1-column table. SORT by val ASC → 0-row result, no crash. */
+static MunitResult test_sort_empty_table(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    td_t* val_vec = td_vec_new(TD_I64, 0);
+    int64_t name_val = td_sym_intern("val", 3);
+    td_t* tbl = td_table_new(1);
+    tbl = td_table_add_col(tbl, name_val, val_vec);
+    td_release(val_vec);
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* tbl_op = td_const_table(g, tbl);
+    td_op_t* val_key = td_scan(g, "val");
+    td_op_t* keys[] = { val_key };
+    uint8_t descs[] = { 0 };
+    uint8_t nulls_first[] = { 0 };
+    td_op_t* sort_op = td_sort_op(g, tbl_op, keys, descs, nulls_first, 1);
+
+    td_t* result = td_execute(g, sort_op);
+    /* Accept either empty result or error — just must not crash */
+    if (result && !TD_IS_ERR(result)) {
+        munit_assert_int(td_table_nrows(result), ==, 0);
+        td_release(result);
+    }
+
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Left: make_audit_table(). Right: empty table (0 rows with id column).
+ * INNER JOIN → 0 result rows. */
+static MunitResult test_join_empty_table(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* left = make_audit_table();
+
+    /* Build empty right table with "id" column */
+    td_t* rid_vec = td_vec_new(TD_I64, 0);
+    int64_t name_id = td_sym_intern("id", 2);
+    td_t* right = td_table_new(1);
+    right = td_table_add_col(right, name_id, rid_vec);
+    td_release(rid_vec);
+
+    td_graph_t* g = td_graph_new(left);
+    td_op_t* left_op  = td_const_table(g, left);
+    td_op_t* right_op = td_const_table(g, right);
+    td_op_t* lk = td_scan(g, "id");
+    td_op_t* lk_arr[] = { lk };
+    td_op_t* rk_arr[] = { lk };
+    td_op_t* join_op = td_join(g, left_op, lk_arr, right_op, rk_arr, 1, 0);
+
+    td_t* result = td_execute(g, join_op);
+    /* Accept either empty result or error — just must not crash */
+    if (result && !TD_IS_ERR(result)) {
+        munit_assert_int(td_table_nrows(result), ==, 0);
+        td_release(result);
+    }
+
+    td_release(right);
+    td_graph_free(g);
+    td_release(left);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* -----------------------------------------------------------------------
  * Test array + suite registration
  * ----------------------------------------------------------------------- */
 
@@ -817,6 +1148,18 @@ static MunitTest audit_tests[] = {
     { "/filter_lazy_chained",    test_filter_lazy_chained,    NULL, NULL, 0, NULL },
     { "/having_fusion",          test_having_fusion,          NULL, NULL, 0, NULL },
     { "/having_with_selection",  test_having_with_selection,  NULL, NULL, 0, NULL },
+    /* Task 7: Category 2 — GROUP BY fallback path tests */
+    { "/group_small",            test_group_small,            NULL, NULL, 0, NULL },
+    { "/group_multi_agg",        test_group_multi_agg,        NULL, NULL, 0, NULL },
+    { "/group_single_row_groups",test_group_single_row_groups,NULL, NULL, 0, NULL },
+    /* Task 8: Category 2 — SORT/JOIN/FILTER fallback tests */
+    { "/sort_small",             test_sort_small,             NULL, NULL, 0, NULL },
+    { "/join_small",             test_join_small,             NULL, NULL, 0, NULL },
+    { "/filter_eager",           test_filter_eager,           NULL, NULL, 0, NULL },
+    /* Task 9: Category 3 — Error path edge cases (empty tables) */
+    { "/group_empty_table",      test_group_empty_table,      NULL, NULL, 0, NULL },
+    { "/sort_empty_table",       test_sort_empty_table,       NULL, NULL, 0, NULL },
+    { "/join_empty_table",       test_join_empty_table,       NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 
