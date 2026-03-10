@@ -774,7 +774,7 @@ cd teidelum && git add src/chat/files.rs && git commit -m "chat: add file downlo
 
 **Steps:**
 
-- [ ] Add the `files.upload` route to the `authed` router in `chat_routes` in `teidelum/src/chat/handlers.rs`.
+- [x] Add the `files.upload` route to the `authed` router in `chat_routes` in `teidelum/src/chat/handlers.rs`.
 
 Add after the `search.messages` route:
 
@@ -817,7 +817,7 @@ The full `authed` section becomes:
         .with_state(state.clone());
 ```
 
-- [ ] Add the file download route to `build_router` in `teidelum/src/server.rs`.
+- [x] Add the file download route to `build_router` in `teidelum/src/server.rs`.
 
 In `build_router`, add the file download route after the `.merge(chat_routes(...))` line and before the `.layer(CorsLayer::permissive())`. The download route needs the `AppState`:
 
