@@ -60,6 +60,7 @@ extern MunitSuite test_types_suite;
 extern MunitSuite test_platform_suite;
 extern MunitSuite test_sys_suite;
 extern MunitSuite test_pipe_suite;
+extern MunitSuite test_audit_suite;
 
 static MunitSuite child_suites[] = {
     /* { .prefix, .tests, .suites, .iterations, .options } */
@@ -89,6 +90,7 @@ static MunitSuite child_suites[] = {
     { "/platform", NULL, NULL, 0, 0 },
     { "/sys",      NULL, NULL, 0, 0 },
     { "/pipe",     NULL, NULL, 0, 0 },
+    { "/audit",    NULL, NULL, 0, 0 },
     { NULL, NULL, NULL, 0, 0 },        /* terminator */
 };
 
@@ -128,6 +130,7 @@ int main(int argc, char* argv[]) {
     child_suites[23] = test_platform_suite;
     child_suites[24] = test_sys_suite;
     child_suites[25] = test_pipe_suite;
+    child_suites[26] = test_audit_suite;
 
     return munit_suite_main(&root_suite, NULL, argc, argv);
 }
