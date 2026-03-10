@@ -107,11 +107,161 @@ static MunitResult test_audit_smoke(const void* params, void* data) {
 }
 
 /* -----------------------------------------------------------------------
+ * Category 1: Selection bitmap + GROUP BY regression tests
+ * ----------------------------------------------------------------------- */
+
+/* Selection mask=[0,0,1,1,1] (rows where id>1) + GROUP BY id, SUM(val)
+ * Expected: 2 groups — {id=2: sum=70, id=3: sum=50}, total=120 */
+static MunitResult test_sel_group_sum(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+
+    /* Set selection: rows 2,3,4 pass (id>1) */
+    uint8_t mask[] = {0, 0, 1, 1, 1};
+    td_t* sel = make_selection(mask, 5);
+    munit_assert_false(TD_IS_ERR(sel));
+    td_retain(sel);
+    g->selection = sel;
+
+    td_op_t* key = td_scan(g, "id");
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* keys[] = { key };
+    td_op_t* agg_ins[] = { val };
+    uint16_t agg_ops[] = { OP_SUM };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 1);
+    td_t* result = td_execute(g, grp);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+
+    int64_t nrows = td_table_nrows(result);
+    munit_assert_int(nrows, ==, 2);  /* groups: id=2, id=3 */
+
+    /* Verify sums: id=2: 30+40=70, id=3: 50 */
+    td_t* id_col  = td_table_get_col_idx(result, 0);
+    td_t* sum_col = td_table_get_col_idx(result, 1);
+    int64_t total = 0;
+    int64_t sum2 = 0, sum3 = 0;
+    for (int64_t i = 0; i < nrows; i++) {
+        int64_t id = ((int64_t*)td_data(id_col))[i];
+        int64_t s  = ((int64_t*)td_data(sum_col))[i];
+        total += s;
+        if (id == 2) sum2 = s;
+        else if (id == 3) sum3 = s;
+    }
+    munit_assert_int(total, ==, 120);
+    munit_assert_int(sum2, ==, 70);
+    munit_assert_int(sum3, ==, 50);
+
+    td_release(result);
+    td_release(sel);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Same selection + GROUP BY id, COUNT(val) → 2 groups */
+static MunitResult test_sel_group_count(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+
+    uint8_t mask[] = {0, 0, 1, 1, 1};
+    td_t* sel = make_selection(mask, 5);
+    munit_assert_false(TD_IS_ERR(sel));
+    td_retain(sel);
+    g->selection = sel;
+
+    td_op_t* key = td_scan(g, "id");
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* keys[] = { key };
+    td_op_t* agg_ins[] = { val };
+    uint16_t agg_ops[] = { OP_COUNT };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 1);
+    td_t* result = td_execute(g, grp);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+
+    int64_t nrows = td_table_nrows(result);
+    munit_assert_int(nrows, ==, 2);  /* groups: id=2, id=3 */
+
+    /* Verify counts: id=2: 2 rows, id=3: 1 row */
+    td_t* id_col  = td_table_get_col_idx(result, 0);
+    td_t* cnt_col = td_table_get_col_idx(result, 1);
+    int64_t cnt2 = 0, cnt3 = 0;
+    for (int64_t i = 0; i < nrows; i++) {
+        int64_t id = ((int64_t*)td_data(id_col))[i];
+        int64_t c  = ((int64_t*)td_data(cnt_col))[i];
+        if (id == 2) cnt2 = c;
+        else if (id == 3) cnt3 = c;
+    }
+    munit_assert_int(cnt2, ==, 2);
+    munit_assert_int(cnt3, ==, 1);
+
+    td_release(result);
+    td_release(sel);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Selection + scalar SUM(val) (no GROUP BY keys) → 120 */
+static MunitResult test_sel_group_scalar(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+
+    uint8_t mask[] = {0, 0, 1, 1, 1};
+    td_t* sel = make_selection(mask, 5);
+    munit_assert_false(TD_IS_ERR(sel));
+    td_retain(sel);
+    g->selection = sel;
+
+    td_op_t* val = td_scan(g, "val");
+    uint16_t agg_ops[] = { OP_SUM };
+    td_op_t* agg_ins[] = { val };
+
+    td_op_t* grp = td_group(g, NULL, 0, agg_ops, agg_ins, 1);
+    td_t* result = td_execute(g, grp);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+
+    int64_t nrows = td_table_nrows(result);
+    munit_assert_int(nrows, ==, 1);
+
+    td_t* sum_col = td_table_get_col_idx(result, 0);
+    munit_assert_int(((int64_t*)td_data(sum_col))[0], ==, 120);
+
+    td_release(result);
+    td_release(sel);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* -----------------------------------------------------------------------
  * Test array + suite registration
  * ----------------------------------------------------------------------- */
 
 static MunitTest audit_tests[] = {
-    { "/smoke", test_audit_smoke, NULL, NULL, 0, NULL },
+    { "/smoke",            test_audit_smoke,       NULL, NULL, 0, NULL },
+    { "/sel_group_sum",    test_sel_group_sum,     NULL, NULL, 0, NULL },
+    { "/sel_group_count",  test_sel_group_count,   NULL, NULL, 0, NULL },
+    { "/sel_group_scalar", test_sel_group_scalar,  NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 
