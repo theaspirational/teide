@@ -202,12 +202,13 @@ int64_t td_sym_intern(const char* str, size_t len) {
     }
 
     /* Grow hash table if load factor exceeds threshold, or if critically
-     * full.  Attempt grow before refusing insert. */
-    if (g_sym.str_count * 100 >= g_sym.bucket_cap * 70) {
+     * full.  Attempt grow before refusing insert.
+     * Cast to uint64_t to prevent overflow when bucket_cap >= 2^26. */
+    if ((uint64_t)g_sym.str_count * 100 >= (uint64_t)g_sym.bucket_cap * 70) {
         if (!ht_grow()) {
             /* If critically full even after failed grow, refuse insert
              * to prevent infinite probe loops. */
-            if (g_sym.str_count * 100 >= g_sym.bucket_cap * 95) {
+            if ((uint64_t)g_sym.str_count * 100 >= (uint64_t)g_sym.bucket_cap * 95) {
                 sym_unlock();
                 return -1;
             }
