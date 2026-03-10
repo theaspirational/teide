@@ -867,7 +867,7 @@ Key design decision: MCP tools operate as a **specific bot user**. The bot user 
 
 **Steps:**
 
-- [ ] Add parameter structs for the six new MCP chat tools to `teidelum/src/mcp.rs`.
+- [x] Add parameter structs for the six new MCP chat tools to `teidelum/src/mcp.rs`.
 
 Add after the `AddRelationshipParams` struct (around line 178):
 
@@ -928,7 +928,7 @@ pub struct ChatSearchParams {
 }
 ```
 
-- [ ] Add a helper method on `Teidelum` to resolve the bot user ID.
+- [x] Add a helper method on `Teidelum` to resolve the bot user ID.
 
 Add inside the `#[tool_router] impl Teidelum` block, before the first `#[tool]` method:
 
@@ -973,7 +973,7 @@ Add inside the `#[tool_router] impl Teidelum` block, before the first `#[tool]` 
 
 Note: the helper uses `Value` which is already imported as `crate::connector::Value` in the file's use section.
 
-- [ ] Add the six `#[tool]` methods inside the `#[tool_router] impl Teidelum` block, after the existing `add_relationship` tool.
+- [x] Add the six `#[tool]` methods inside the `#[tool_router] impl Teidelum` block, after the existing `add_relationship` tool.
 
 ```rust
     #[tool(description = "Send a message to a chat channel (as bot user)")]
@@ -1288,7 +1288,7 @@ Note: the helper uses `Value` which is already imported as `crate::connector::Va
     }
 ```
 
-- [ ] Verify that the necessary imports are present at the top of `mcp.rs`. The file already imports `crate::connector::Value` and `crate::search::SearchQuery`. No new imports needed since we use fully qualified paths for `crate::chat::*` items.
+- [x] Verify that the necessary imports are present at the top of `mcp.rs`. The file already imports `crate::connector::Value` and `crate::search::SearchQuery`. No new imports needed since we use fully qualified paths for `crate::chat::*` items.
 
 **Test commands:**
 
