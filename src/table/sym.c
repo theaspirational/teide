@@ -143,9 +143,9 @@ static void ht_insert(uint64_t* buckets, uint32_t cap, uint32_t hash, uint32_t i
     }
 }
 
-static bool ht_grow(void) {
-    uint32_t new_cap = g_sym.bucket_cap * 2;
-    uint64_t* new_buckets = (uint64_t*)td_sys_alloc(new_cap * sizeof(uint64_t));
+/* Grow hash table to new_cap (must be power of 2 and > current cap). */
+static bool ht_grow_to(uint32_t new_cap) {
+    uint64_t* new_buckets = (uint64_t*)td_sys_alloc((size_t)new_cap * sizeof(uint64_t));
     if (!new_buckets) return false;
 
     /* Re-insert all existing entries */
@@ -161,6 +161,13 @@ static bool ht_grow(void) {
     g_sym.buckets = new_buckets;
     g_sym.bucket_cap = new_cap;
     return true;
+}
+
+static bool ht_grow(void) {
+    /* Overflow guard: bucket_cap is always power of 2.
+     * At 2^31, doubling overflows uint32_t. */
+    if (g_sym.bucket_cap >= (UINT32_MAX / 2 + 1)) return false;
+    return ht_grow_to(g_sym.bucket_cap * 2);
 }
 
 /* --------------------------------------------------------------------------
@@ -194,10 +201,17 @@ int64_t td_sym_intern(const char* str, size_t len) {
         slot = (slot + 1) & mask;
     }
 
-    /* Refuse insert if table is critically full (ht_grow may have failed) */
-    if (g_sym.str_count >= (uint32_t)(g_sym.bucket_cap * 0.95)) {
-        sym_unlock();
-        return -1;
+    /* Grow hash table if load factor exceeds threshold, or if critically
+     * full.  Attempt grow before refusing insert. */
+    if (g_sym.str_count * 100 >= g_sym.bucket_cap * 70) {
+        if (!ht_grow()) {
+            /* If critically full even after failed grow, refuse insert
+             * to prevent infinite probe loops. */
+            if (g_sym.str_count * 100 >= g_sym.bucket_cap * 95) {
+                sym_unlock();
+                return -1;
+            }
+        }
     }
 
     /* Not found -- create new entry */
@@ -205,9 +219,10 @@ int64_t td_sym_intern(const char* str, size_t len) {
 
     /* Grow strings array if needed */
     if (new_id >= g_sym.str_cap) {
+        if (g_sym.str_cap >= UINT32_MAX / 2) { sym_unlock(); return -1; }
         uint32_t new_str_cap = g_sym.str_cap * 2;
         td_t** new_strings = (td_t**)td_sys_realloc(g_sym.strings,
-                                                    new_str_cap * sizeof(td_t*));
+                                                    (size_t)new_str_cap * sizeof(td_t*));
         if (!new_strings) { sym_unlock(); return -1; }
         g_sym.strings = new_strings;
         g_sym.str_cap = new_str_cap;
@@ -220,16 +235,10 @@ int64_t td_sym_intern(const char* str, size_t len) {
     g_sym.strings[new_id] = s;
     g_sym.str_count++;
 
-    /* Insert into hash table */
+    /* Insert into hash table.
+     * Note: ht_insert probes from hash & mask to find an empty slot,
+     * so it works correctly even if ht_grow changed the bucket array. */
     ht_insert(g_sym.buckets, g_sym.bucket_cap, hash, new_id);
-
-    /* Check load factor and grow if needed */
-    if ((double)g_sym.str_count / (double)g_sym.bucket_cap > SYM_LOAD_FACTOR) {
-        if (!ht_grow()) {
-            /* OOM: continue with old table. Linear probing degrades but
-             * 0.95 load factor guard prevents infinite loops. */
-        }
-    }
 
     sym_unlock();
     return (int64_t)new_id;
@@ -299,6 +308,60 @@ uint32_t td_sym_count(void) {
     uint32_t count = g_sym.str_count;
     sym_unlock();
     return count;
+}
+
+/* --------------------------------------------------------------------------
+ * td_sym_ensure_cap -- pre-grow hash table and strings array
+ *
+ * Ensures the symbol table can hold at least `needed` total symbols without
+ * rehashing.  Call before bulk interning (e.g., CSV merge) to prevent
+ * mid-insert OOM that silently drops symbols.
+ * -------------------------------------------------------------------------- */
+
+bool td_sym_ensure_cap(uint32_t needed) {
+    if (!atomic_load_explicit(&g_sym_inited, memory_order_acquire)) return false;
+
+    sym_lock();
+
+    /* Grow strings array if needed */
+    while (g_sym.str_cap < needed) {
+        if (g_sym.str_cap >= UINT32_MAX / 2) { sym_unlock(); return false; }
+        uint32_t new_str_cap = g_sym.str_cap * 2;
+        if (new_str_cap < needed) { /* jump directly to needed */
+            new_str_cap = needed;
+            /* Round up to power of 2 */
+            new_str_cap--;
+            new_str_cap |= new_str_cap >> 1;
+            new_str_cap |= new_str_cap >> 2;
+            new_str_cap |= new_str_cap >> 4;
+            new_str_cap |= new_str_cap >> 8;
+            new_str_cap |= new_str_cap >> 16;
+            new_str_cap++;
+        }
+        td_t** new_strings = (td_t**)td_sys_realloc(g_sym.strings,
+                                                     (size_t)new_str_cap * sizeof(td_t*));
+        if (!new_strings) { sym_unlock(); return false; }
+        g_sym.strings = new_strings;
+        g_sym.str_cap = new_str_cap;
+    }
+
+    /* Grow hash table so load factor stays below threshold after filling */
+    uint32_t needed_buckets = (uint32_t)((double)needed / SYM_LOAD_FACTOR) + 1;
+    /* Round up to power of 2 */
+    needed_buckets--;
+    needed_buckets |= needed_buckets >> 1;
+    needed_buckets |= needed_buckets >> 2;
+    needed_buckets |= needed_buckets >> 4;
+    needed_buckets |= needed_buckets >> 8;
+    needed_buckets |= needed_buckets >> 16;
+    needed_buckets++;
+
+    if (needed_buckets > g_sym.bucket_cap) {
+        if (!ht_grow_to(needed_buckets)) { sym_unlock(); return false; }
+    }
+
+    sym_unlock();
+    return true;
 }
 
 /* --------------------------------------------------------------------------

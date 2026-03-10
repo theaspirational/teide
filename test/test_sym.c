@@ -182,6 +182,52 @@ static MunitResult test_sym_many(const void* params, void* fixture) {
     return MUNIT_OK;
 }
 
+/* ---- sym_bulk: intern 100K symbols and verify none are lost ------------ */
+
+static MunitResult test_sym_bulk(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+
+    #define BULK_N 100000
+
+    /* Pre-reserve capacity (tests td_sym_ensure_cap) */
+    bool cap_ok = td_sym_ensure_cap(BULK_N);
+    munit_assert_true(cap_ok);
+
+    /* Intern 100K unique symbols */
+    char buf[32];
+    for (int i = 0; i < BULK_N; i++) {
+        int len = snprintf(buf, sizeof(buf), "bulk_%06d", i);
+        int64_t id = td_sym_intern(buf, (size_t)len);
+        munit_assert_int(id, >=, 0);
+    }
+
+    munit_assert_uint(td_sym_count(), ==, BULK_N);
+
+    /* Verify every symbol is retrievable with correct string */
+    for (int i = 0; i < BULK_N; i++) {
+        int len = snprintf(buf, sizeof(buf), "bulk_%06d", i);
+        int64_t id = td_sym_find(buf, (size_t)len);
+        munit_assert_int(id, >=, 0);
+        td_t* s = td_sym_str(id);
+        munit_assert_ptr_not_null(s);
+        munit_assert_size(td_str_len(s), ==, (size_t)len);
+        munit_assert_memory_equal((size_t)len, td_str_ptr(s), buf);
+    }
+
+    /* Re-interning must return same IDs (idempotent) */
+    for (int i = 0; i < BULK_N; i++) {
+        int len = snprintf(buf, sizeof(buf), "bulk_%06d", i);
+        int64_t id1 = td_sym_find(buf, (size_t)len);
+        int64_t id2 = td_sym_intern(buf, (size_t)len);
+        munit_assert_int(id1, ==, id2);
+    }
+
+    munit_assert_uint(td_sym_count(), ==, BULK_N);
+
+    #undef BULK_N
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest sym_tests[] = {
@@ -193,6 +239,7 @@ static MunitTest sym_tests[] = {
     { "/str_roundtrip",   test_sym_str_roundtrip,   sym_setup, sym_teardown, 0, NULL },
     { "/count",           test_sym_count,           sym_setup, sym_teardown, 0, NULL },
     { "/many",            test_sym_many,            sym_setup, sym_teardown, 0, NULL },
+    { "/bulk",            test_sym_bulk,            sym_setup, sym_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

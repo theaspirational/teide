@@ -123,9 +123,10 @@ static inline void scratch_free(td_t* hdr) {
 /* Pack worker_id + local_id into uint32_t for string columns.
  * Upper 8 bits = worker_id (max 256 workers).
  * Lower 24 bits = local_id (max 16M unique strings per worker per column). */
-#define PACK_SYM(wid, lid) (((uint32_t)(wid) << 24) | (lid))
+#define LSYM_MAX_LID       0x00FFFFFFu  /* 16,777,215 */
+#define PACK_SYM(wid, lid) (((uint32_t)(wid) << 24) | ((lid) & LSYM_MAX_LID))
 #define UNPACK_WID(packed) ((packed) >> 24)
-#define UNPACK_LID(packed) ((packed) & 0x00FFFFFFu)
+#define UNPACK_LID(packed) ((packed) & LSYM_MAX_LID)
 
 typedef struct {
     td_t*      buckets_hdr;
@@ -224,6 +225,7 @@ static uint32_t local_sym_intern(local_sym_t* ls, const char* str, size_t len) {
     }
 
     uint32_t new_id = ls->count;
+    if (new_id > LSYM_MAX_LID) return UINT32_MAX; /* 24-bit local_id overflow */
 
     if (new_id >= ls->cap) {
         if (ls->cap > UINT32_MAX / 2) return UINT32_MAX;
@@ -849,10 +851,27 @@ static void sym_fixup_fn(void* arg, uint32_t worker_id, int64_t start, int64_t e
     }
 }
 
-static void merge_local_syms(local_sym_t* local_syms, uint32_t n_workers,
+static bool merge_local_syms(local_sym_t* local_syms, uint32_t n_workers,
                               int n_cols, const csv_type_t* col_types,
                               void** col_data, int64_t n_rows,
                               td_pool_t* pool, int64_t* col_max_ids) {
+    /* Pre-grow the global symbol table to avoid mid-merge OOM.
+     * Count total unique symbols across all workers and columns,
+     * then ensure capacity.  This is an upper bound (workers may
+     * share strings), but avoids rehash failures during insert. */
+    uint32_t total_unique = td_sym_count();
+    for (int c = 0; c < n_cols; c++) {
+        if (col_types[c] != CSV_TYPE_STR) continue;
+        for (uint32_t w = 0; w < n_workers; w++) {
+            local_sym_t* ls = &local_syms[(size_t)w * (size_t)n_cols + (size_t)c];
+            total_unique += ls->count;
+        }
+    }
+    if (total_unique > 0) {
+        td_sym_ensure_cap(total_unique);
+    }
+
+    bool ok = true;
     for (int c = 0; c < n_cols; c++) {
         if (col_types[c] != CSV_TYPE_STR) continue;
 
@@ -877,7 +896,7 @@ static void merge_local_syms(local_sym_t* local_syms, uint32_t n_workers,
             for (uint32_t i = 0; i < ls->count; i++) {
                 mappings[w][i] = td_sym_intern(
                     ls->arena + ls->offsets[i], ls->lens[i]);
-                if (mappings[w][i] < 0) mappings[w][i] = 0;
+                if (mappings[w][i] < 0) { ok = false; mappings[w][i] = 0; }
             }
         }
 
@@ -913,6 +932,7 @@ static void merge_local_syms(local_sym_t* local_syms, uint32_t n_workers,
 
         for (uint32_t w = 0; w < n_workers; w++) scratch_free(map_hdrs[w]);
     }
+    return ok;
 }
 
 /* --------------------------------------------------------------------------
@@ -1299,11 +1319,18 @@ td_t* td_read_csv_opts(const char* path, char delimiter, bool header,
         td_pool_t* pool = td_pool_get();
         bool use_parallel = pool && n_rows > 8192;
 
-        /* PACK_SYM uses upper 8 bits for worker_id (IDs 0-255, max 256 workers).
-         * If pool has >256 workers and string columns exist, fall back to serial
-         * to avoid worker ID overflow in packed sym encoding. */
-        if (use_parallel && has_str_cols && td_pool_total_workers(pool) > 256) {
-            use_parallel = false;
+        /* PACK_SYM uses upper 8 bits for worker_id (IDs 0-255, max 256 workers)
+         * and lower 24 bits for local_id (max 16M unique strings per worker).
+         * If pool has >256 workers, fall back to serial.
+         * If worst-case unique-per-worker (n_rows / n_workers) exceeds 16M,
+         * we need more workers than available — fall back to serial. */
+        if (use_parallel && has_str_cols) {
+            uint32_t nw = td_pool_total_workers(pool);
+            if (nw > 256) {
+                use_parallel = false;
+            } else if (n_rows / (int64_t)nw > (int64_t)LSYM_MAX_LID) {
+                use_parallel = false;
+            }
         }
 
         if (use_parallel) {

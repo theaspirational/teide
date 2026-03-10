@@ -746,6 +746,7 @@ int64_t  td_sym_intern(const char* str, size_t len);
 int64_t  td_sym_find(const char* str, size_t len);
 td_t*    td_sym_str(int64_t id);
 uint32_t td_sym_count(void);
+bool     td_sym_ensure_cap(uint32_t needed);
 td_err_t td_sym_save(const char* path);
 td_err_t td_sym_load(const char* path);
 
