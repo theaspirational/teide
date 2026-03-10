@@ -2559,6 +2559,118 @@ static int sort_cmp(const sort_cmp_ctx_t* ctx, int64_t a, int64_t b) {
 }
 
 /* --------------------------------------------------------------------------
+ * Small-array sort: introsort on (key, idx) pairs.
+ *
+ * For arrays ≤ RADIX_SORT_THRESHOLD, a single-pass encode + comparison sort
+ * beats multi-pass radix sort.  Uses quicksort with median-of-3 pivot and
+ * heapsort fallback (introsort) to guarantee O(n log n) worst case.
+ * -------------------------------------------------------------------------- */
+
+#define RADIX_SORT_THRESHOLD 4096  /* switch from comparison to radix sort */
+#define SMALL_POOL_THRESHOLD 8192  /* skip pool dispatch below this size */
+
+static void key_sift_down(uint64_t* keys, int64_t* idx, int64_t n, int64_t i) {
+    for (;;) {
+        int64_t largest = i, l = 2*i+1, r = 2*i+2;
+        if (l < n && keys[l] > keys[largest]) largest = l;
+        if (r < n && keys[r] > keys[largest]) largest = r;
+        if (largest == i) return;
+        uint64_t tk = keys[i]; keys[i] = keys[largest]; keys[largest] = tk;
+        int64_t  ti = idx[i];  idx[i]  = idx[largest];  idx[largest]  = ti;
+        i = largest;
+    }
+}
+
+static void key_heapsort(uint64_t* keys, int64_t* idx, int64_t n) {
+    for (int64_t i = n/2 - 1; i >= 0; i--)
+        key_sift_down(keys, idx, n, i);
+    for (int64_t i = n - 1; i > 0; i--) {
+        uint64_t tk = keys[0]; keys[0] = keys[i]; keys[i] = tk;
+        int64_t  ti = idx[0];  idx[0]  = idx[i];  idx[i]  = ti;
+        key_sift_down(keys, idx, i, 0);
+    }
+}
+
+static void key_insertion_sort(uint64_t* keys, int64_t* idx, int64_t n) {
+    for (int64_t i = 1; i < n; i++) {
+        uint64_t kk = keys[i];
+        int64_t  ii = idx[i];
+        int64_t j = i - 1;
+        while (j >= 0 && keys[j] > kk) {
+            keys[j+1] = keys[j];
+            idx[j+1]  = idx[j];
+            j--;
+        }
+        keys[j+1] = kk;
+        idx[j+1]  = ii;
+    }
+}
+
+static void key_introsort_impl(uint64_t* keys, int64_t* idx,
+                                 int64_t n, int depth) {
+    while (n > 32) {
+        if (depth == 0) {
+            key_heapsort(keys, idx, n);
+            return;
+        }
+        depth--;
+
+        /* Median-of-3 pivot */
+        int64_t mid = n / 2;
+        uint64_t a = keys[0], b = keys[mid], c = keys[n-1];
+        int64_t pi;
+        if (a < b) pi = (b < c) ? mid : (a < c ? n-1 : 0);
+        else       pi = (a < c) ? 0   : (b < c ? n-1 : mid);
+
+        /* Move pivot to end */
+        uint64_t pk = keys[pi]; keys[pi] = keys[n-1]; keys[n-1] = pk;
+        int64_t  pv = idx[pi];  idx[pi]  = idx[n-1];  idx[n-1]  = pv;
+
+        /* Partition */
+        int64_t lo = 0;
+        for (int64_t i = 0; i < n - 1; i++) {
+            if (keys[i] < pk) {
+                uint64_t tk = keys[i]; keys[i] = keys[lo]; keys[lo] = tk;
+                int64_t  ti = idx[i];  idx[i]  = idx[lo];  idx[lo]  = ti;
+                lo++;
+            }
+        }
+        keys[n-1] = keys[lo]; keys[lo] = pk;
+        idx[n-1]  = idx[lo];  idx[lo]  = pv;
+
+        /* Recurse on smaller partition, iterate on larger */
+        if (lo < n - 1 - lo) {
+            key_introsort_impl(keys, idx, lo, depth);
+            keys += lo + 1; idx += lo + 1; n -= lo + 1;
+        } else {
+            key_introsort_impl(keys + lo + 1, idx + lo + 1, n - lo - 1, depth);
+            n = lo;
+        }
+    }
+    key_insertion_sort(keys, idx, n);
+}
+
+/* Sort (key, idx) pairs in-place by key.  O(n log n) guaranteed. */
+static void key_introsort(uint64_t* keys, int64_t* idx, int64_t n) {
+    if (n <= 1) return;
+    int depth = 0;
+    for (int64_t nn = n; nn > 1; nn >>= 1) depth++;
+    depth *= 2;
+    key_introsort_impl(keys, idx, n, depth);
+}
+
+/* Compute the number of significant bytes for radix sort based on type.
+ * Returns 1..8: the number of byte passes radix_sort_run needs. */
+static inline uint8_t radix_key_bytes(int8_t type) {
+    switch (type) {
+    case TD_BOOL: case TD_U8:   return 1;
+    case TD_I16:                return 2;
+    case TD_I32: case TD_DATE: case TD_TIME: return 4;
+    default:                    return 8;  /* I64, F64, TIMESTAMP, SYM */
+    }
+}
+
+/* --------------------------------------------------------------------------
  * Parallel LSB radix sort (8-bit digits, 256 buckets)
  *
  * Used for single-key sorts on I64/F64/I32/SYM/TIMESTAMP columns,
@@ -2639,6 +2751,7 @@ static void radix_scatter_fn(void* arg, uint32_t wid, int64_t start, int64_t end
 }
 
 /* Run radix sort on pre-encoded uint64_t keys + int64_t indices.
+ * n_bytes limits the number of byte passes (1..8) based on key width.
  * Returns pointer to the final sorted index array (either `indices` or
  * `idx_tmp`).  Caller must keep both alive until done reading indices
  * (the result may point into idx_tmp if an odd number of passes executed).
@@ -2647,7 +2760,7 @@ static void radix_scatter_fn(void* arg, uint32_t wid, int64_t start, int64_t end
 static int64_t* radix_sort_run(td_pool_t* pool,
                                 uint64_t* keys, int64_t* indices,
                                 uint64_t* keys_tmp, int64_t* idx_tmp,
-                                int64_t n) {
+                                int64_t n, uint8_t n_bytes) {
     uint32_t n_tasks = pool ? td_pool_total_workers(pool) : 1;
     if (n_tasks < 1) n_tasks = 1;
 
@@ -2664,7 +2777,7 @@ static int64_t* radix_sort_run(td_pool_t* pool,
     uint64_t* src_k = keys,     *dst_k = keys_tmp;
     int64_t*  src_i = indices,   *dst_i = idx_tmp;
 
-    for (uint8_t bp = 0; bp < 8; bp++) {
+    for (uint8_t bp = 0; bp < n_bytes; bp++) {
         uint8_t shift = bp * 8;
 
         radix_pass_ctx_t ctx = {
@@ -3476,8 +3589,11 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                 /* --- Single-key sort --- */
                 bool use_topn = (limit > 0 && limit <= TOPN_MAX
                                  && nrows > limit * 8);
+                uint8_t key_nbytes = radix_key_bytes(sort_vecs[0]->type);
+                /* Skip pool for small arrays — dispatch overhead dominates */
+                td_pool_t* sk_pool = (nrows >= SMALL_POOL_THRESHOLD) ? pool : NULL;
 
-                /* Encode keys (needed by both paths) */
+                /* Encode keys (needed by all paths) */
                 td_t *keys_hdr;
                 uint64_t* keys = (uint64_t*)scratch_alloc(&keys_hdr,
                                     (size_t)nrows * sizeof(uint64_t));
@@ -3493,14 +3609,14 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                         .nulls_first = nf,
                         .enum_rank = enum_ranks[0], .n_keys = 1,
                     };
-                    if (pool)
-                        td_pool_dispatch(pool, radix_encode_fn, &enc, nrows);
+                    if (sk_pool)
+                        td_pool_dispatch(sk_pool, radix_encode_fn, &enc, nrows);
                     else
                         radix_encode_fn(&enc, 0, 0, nrows);
 
                     if (use_topn) {
                         /* Top-N heap selection (1 pass over keys) */
-                        uint32_t nw = pool ? td_pool_total_workers(pool) : 1;
+                        uint32_t nw = sk_pool ? td_pool_total_workers(sk_pool) : 1;
                         td_t* heaps_hdr;
                         topn_entry_t* heaps = (topn_entry_t*)scratch_alloc(
                             &heaps_hdr, (size_t)nw * (size_t)limit * sizeof(topn_entry_t));
@@ -3511,8 +3627,8 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                                 .keys = keys, .limit = limit,
                                 .heaps = heaps, .counts = wc,
                             };
-                            if (pool)
-                                td_pool_dispatch(pool, topn_scan_fn, &tctx, nrows);
+                            if (sk_pool)
+                                td_pool_dispatch(sk_pool, topn_scan_fn, &tctx, nrows);
                             else
                                 topn_scan_fn(&tctx, 0, 0, nrows);
 
@@ -3521,16 +3637,23 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                             radix_done = true;
                         }
                         scratch_free(heaps_hdr);
+                    } else if (nrows <= RADIX_SORT_THRESHOLD) {
+                        /* Introsort on encoded keys — faster than multi-pass
+                         * radix for small arrays (avoids scatter overhead). */
+                        key_introsort(keys, indices, nrows);
+                        sorted_idx = indices;
+                        radix_done = true;
                     } else {
-                        /* Full 8-pass radix sort */
+                        /* Radix sort with type-aware pass count */
                         td_t *ktmp_hdr, *itmp_hdr;
                         uint64_t* ktmp = (uint64_t*)scratch_alloc(&ktmp_hdr,
                                             (size_t)nrows * sizeof(uint64_t));
                         int64_t*  itmp = (int64_t*)scratch_alloc(&itmp_hdr,
                                             (size_t)nrows * sizeof(int64_t));
                         if (ktmp && itmp) {
-                            sorted_idx = radix_sort_run(pool, keys, indices,
-                                                         ktmp, itmp, nrows);
+                            sorted_idx = radix_sort_run(sk_pool, keys, indices,
+                                                         ktmp, itmp, nrows,
+                                                         key_nbytes);
                             radix_done = (sorted_idx != NULL);
                         }
                         scratch_free(ktmp_hdr);
@@ -3546,8 +3669,9 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                 uint8_t total_bits = 0;
                 bool fits = true;
 
-                if (n_sort <= MK_PRESCAN_MAX_KEYS && pool) {
-                    uint32_t nw = td_pool_total_workers(pool);
+                td_pool_t* mk_prescan_pool = (nrows >= SMALL_POOL_THRESHOLD) ? pool : NULL;
+                if (n_sort <= MK_PRESCAN_MAX_KEYS && mk_prescan_pool) {
+                    uint32_t nw = td_pool_total_workers(mk_prescan_pool);
                     size_t pw_count = (size_t)nw * n_sort;
                     int64_t pw_mins_stack[512], pw_maxs_stack[512];
                     td_t *pw_mins_hdr = NULL, *pw_maxs_hdr = NULL;
@@ -3566,7 +3690,7 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                         .n_keys = n_sort, .nrows = nrows, .n_workers = nw,
                         .pw_mins = pw_mins, .pw_maxs = pw_maxs,
                     };
-                    td_pool_dispatch(pool, mk_prescan_fn, &pctx, nrows);
+                    td_pool_dispatch(mk_prescan_pool, mk_prescan_fn, &pctx, nrows);
 
                     /* Merge per-worker results */
                     for (uint8_t k = 0; k < n_sort; k++) {
@@ -3656,10 +3780,13 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
 
                     bool use_topn = (limit > 0 && limit <= TOPN_MAX
                                      && nrows > limit * 8);
+                    uint8_t comp_nbytes = (total_bits + 7) / 8;
+                    if (comp_nbytes < 1) comp_nbytes = 1;
+                    td_pool_t* mk_pool = (nrows >= SMALL_POOL_THRESHOLD) ? pool : NULL;
 
                     if (use_topn) {
                         /* Fused encode + top-N: no 80MB keys array needed */
-                        uint32_t nw = pool ? td_pool_total_workers(pool) : 1;
+                        uint32_t nw = mk_pool ? td_pool_total_workers(mk_pool) : 1;
                         td_t* heaps_hdr;
                         topn_entry_t* heaps = (topn_entry_t*)scratch_alloc(
                             &heaps_hdr, (size_t)nw * (size_t)limit * sizeof(topn_entry_t));
@@ -3677,8 +3804,8 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                                 fctx.descs[k] = ext->sort.desc ? ext->sort.desc[k] : 0;
                                 fctx.enum_ranks[k] = enum_ranks[k];
                             }
-                            if (pool)
-                                td_pool_dispatch(pool, fused_topn_fn, &fctx, nrows);
+                            if (mk_pool)
+                                td_pool_dispatch(mk_pool, fused_topn_fn, &fctx, nrows);
                             else
                                 fused_topn_fn(&fctx, 0, 0, nrows);
 
@@ -3688,7 +3815,7 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                         }
                         scratch_free(heaps_hdr);
                     } else {
-                        /* Full encode + radix sort */
+                        /* Encode composite keys */
                         td_t *keys_hdr;
                         uint64_t* keys = (uint64_t*)scratch_alloc(&keys_hdr,
                                             (size_t)nrows * sizeof(uint64_t));
@@ -3703,24 +3830,33 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                                 enc.descs[k] = ext->sort.desc ? ext->sort.desc[k] : 0;
                                 enc.enum_ranks[k] = enum_ranks[k];
                             }
-                            if (pool)
-                                td_pool_dispatch(pool, radix_encode_fn, &enc, nrows);
+                            if (mk_pool)
+                                td_pool_dispatch(mk_pool, radix_encode_fn, &enc, nrows);
                             else
                                 radix_encode_fn(&enc, 0, 0, nrows);
 
-                            td_t *ktmp_hdr, *itmp_hdr;
-                            uint64_t* ktmp = (uint64_t*)scratch_alloc(&ktmp_hdr,
-                                                (size_t)nrows * sizeof(uint64_t));
-                            int64_t*  itmp = (int64_t*)scratch_alloc(&itmp_hdr,
-                                                (size_t)nrows * sizeof(int64_t));
-                            if (ktmp && itmp) {
-                                sorted_idx = radix_sort_run(pool, keys, indices,
-                                                             ktmp, itmp, nrows);
-                                radix_done = (sorted_idx != NULL);
+                            if (nrows <= RADIX_SORT_THRESHOLD) {
+                                /* Introsort for small composite-key arrays */
+                                key_introsort(keys, indices, nrows);
+                                sorted_idx = indices;
+                                radix_done = true;
+                            } else {
+                                /* Radix sort with type-aware pass count */
+                                td_t *ktmp_hdr, *itmp_hdr;
+                                uint64_t* ktmp = (uint64_t*)scratch_alloc(&ktmp_hdr,
+                                                    (size_t)nrows * sizeof(uint64_t));
+                                int64_t*  itmp = (int64_t*)scratch_alloc(&itmp_hdr,
+                                                    (size_t)nrows * sizeof(int64_t));
+                                if (ktmp && itmp) {
+                                    sorted_idx = radix_sort_run(mk_pool, keys, indices,
+                                                                 ktmp, itmp, nrows,
+                                                                 comp_nbytes);
+                                    radix_done = (sorted_idx != NULL);
+                                }
+                                scratch_free(ktmp_hdr);
+                                if (sorted_idx != itmp) scratch_free(itmp_hdr);
+                                else radix_itmp_hdr = itmp_hdr;
                             }
-                            scratch_free(ktmp_hdr);
-                            if (sorted_idx != itmp) scratch_free(itmp_hdr);
-                            else radix_itmp_hdr = itmp_hdr;
                         }
                         scratch_free(keys_hdr);
                     }
@@ -10473,7 +10609,9 @@ static td_t* exec_window(td_graph_t* g, td_op_t* op, td_t* tbl) {
             }
 
             if (can_radix && n_sort == 1) {
-                /* Single-key radix sort */
+                /* Single-key sort */
+                uint8_t key_nbytes = radix_key_bytes(sort_vecs[0]->type);
+                td_pool_t* sk_pool = (nrows >= SMALL_POOL_THRESHOLD) ? pool : NULL;
                 td_t *keys_hdr;
                 uint64_t* keys = (uint64_t*)scratch_alloc(&keys_hdr,
                                     (size_t)nrows * sizeof(uint64_t));
@@ -10486,24 +10624,31 @@ static td_t* exec_window(td_graph_t* g, td_op_t* op, td_t* tbl) {
                         .nulls_first = sort_descs[0], /* default: NULLS FIRST for DESC */
                         .enum_rank = enum_ranks[0], .n_keys = 1,
                     };
-                    if (pool)
-                        td_pool_dispatch(pool, radix_encode_fn, &enc, nrows);
+                    if (sk_pool)
+                        td_pool_dispatch(sk_pool, radix_encode_fn, &enc, nrows);
                     else
                         radix_encode_fn(&enc, 0, 0, nrows);
 
-                    td_t *ktmp_hdr, *itmp_hdr;
-                    uint64_t* ktmp = (uint64_t*)scratch_alloc(&ktmp_hdr,
-                                        (size_t)nrows * sizeof(uint64_t));
-                    int64_t*  itmp = (int64_t*)scratch_alloc(&itmp_hdr,
-                                        (size_t)nrows * sizeof(int64_t));
-                    if (ktmp && itmp) {
-                        sorted_idx = radix_sort_run(pool, keys, indices,
-                                                     ktmp, itmp, nrows);
-                        radix_done = (sorted_idx != NULL);
+                    if (nrows <= RADIX_SORT_THRESHOLD) {
+                        key_introsort(keys, indices, nrows);
+                        sorted_idx = indices;
+                        radix_done = true;
+                    } else {
+                        td_t *ktmp_hdr, *itmp_hdr;
+                        uint64_t* ktmp = (uint64_t*)scratch_alloc(&ktmp_hdr,
+                                            (size_t)nrows * sizeof(uint64_t));
+                        int64_t*  itmp = (int64_t*)scratch_alloc(&itmp_hdr,
+                                            (size_t)nrows * sizeof(int64_t));
+                        if (ktmp && itmp) {
+                            sorted_idx = radix_sort_run(sk_pool, keys, indices,
+                                                         ktmp, itmp, nrows,
+                                                         key_nbytes);
+                            radix_done = (sorted_idx != NULL);
+                        }
+                        scratch_free(ktmp_hdr);
+                        if (sorted_idx != itmp) scratch_free(itmp_hdr);
+                        else radix_itmp_hdr = itmp_hdr;
                     }
-                    scratch_free(ktmp_hdr);
-                    if (sorted_idx != itmp) scratch_free(itmp_hdr);
-                    else radix_itmp_hdr = itmp_hdr;
                 }
                 scratch_free(keys_hdr);
             } else if (can_radix && n_sort > 1) {
@@ -10513,8 +10658,9 @@ static td_t* exec_window(td_graph_t* g, td_op_t* op, td_t* tbl) {
                 uint8_t total_bits = 0;
                 bool fits = true;
 
-                if (n_sort <= MK_PRESCAN_MAX_KEYS && pool2) {
-                    uint32_t nw = td_pool_total_workers(pool2);
+                td_pool_t* mk_prescan_pool2 = (nrows >= SMALL_POOL_THRESHOLD) ? pool2 : NULL;
+                if (n_sort <= MK_PRESCAN_MAX_KEYS && mk_prescan_pool2) {
+                    uint32_t nw = td_pool_total_workers(mk_prescan_pool2);
                     size_t pw_count = (size_t)nw * n_sort;
                     int64_t pw_mins_stack[512], pw_maxs_stack[512];
                     td_t *pw_mins_hdr = NULL, *pw_maxs_hdr = NULL;
@@ -10533,7 +10679,7 @@ static td_t* exec_window(td_graph_t* g, td_op_t* op, td_t* tbl) {
                         .n_keys = n_sort, .nrows = nrows, .n_workers = nw,
                         .pw_mins = pw_mins, .pw_maxs = pw_maxs,
                     };
-                    td_pool_dispatch(pool2, mk_prescan_fn, &pctx, nrows);
+                    td_pool_dispatch(mk_prescan_pool2, mk_prescan_fn, &pctx, nrows);
 
                     for (uint8_t k = 0; k < n_sort; k++) {
                         int64_t kmin = INT64_MAX, kmax = INT64_MIN;
@@ -10616,6 +10762,10 @@ static td_t* exec_window(td_graph_t* g, td_op_t* op, td_t* tbl) {
                         accum += bits;
                     }
 
+                    uint8_t comp_nbytes = (total_bits + 7) / 8;
+                    if (comp_nbytes < 1) comp_nbytes = 1;
+                    td_pool_t* mk_pool = (nrows >= SMALL_POOL_THRESHOLD) ? pool2 : NULL;
+
                     td_t *keys_hdr;
                     uint64_t* keys = (uint64_t*)scratch_alloc(&keys_hdr,
                                         (size_t)nrows * sizeof(uint64_t));
@@ -10630,24 +10780,31 @@ static td_t* exec_window(td_graph_t* g, td_op_t* op, td_t* tbl) {
                             enc.descs[k] = sort_descs[k];
                             enc.enum_ranks[k] = enum_ranks[k];
                         }
-                        if (pool2)
-                            td_pool_dispatch(pool2, radix_encode_fn, &enc, nrows);
+                        if (mk_pool)
+                            td_pool_dispatch(mk_pool, radix_encode_fn, &enc, nrows);
                         else
                             radix_encode_fn(&enc, 0, 0, nrows);
 
-                        td_t *ktmp_hdr, *itmp_hdr;
-                        uint64_t* ktmp = (uint64_t*)scratch_alloc(&ktmp_hdr,
-                                            (size_t)nrows * sizeof(uint64_t));
-                        int64_t*  itmp = (int64_t*)scratch_alloc(&itmp_hdr,
-                                            (size_t)nrows * sizeof(int64_t));
-                        if (ktmp && itmp) {
-                            sorted_idx = radix_sort_run(pool2, keys, indices,
-                                                         ktmp, itmp, nrows);
-                            radix_done = (sorted_idx != NULL);
+                        if (nrows <= RADIX_SORT_THRESHOLD) {
+                            key_introsort(keys, indices, nrows);
+                            sorted_idx = indices;
+                            radix_done = true;
+                        } else {
+                            td_t *ktmp_hdr, *itmp_hdr;
+                            uint64_t* ktmp = (uint64_t*)scratch_alloc(&ktmp_hdr,
+                                                (size_t)nrows * sizeof(uint64_t));
+                            int64_t*  itmp = (int64_t*)scratch_alloc(&itmp_hdr,
+                                                (size_t)nrows * sizeof(int64_t));
+                            if (ktmp && itmp) {
+                                sorted_idx = radix_sort_run(mk_pool, keys, indices,
+                                                             ktmp, itmp, nrows,
+                                                             comp_nbytes);
+                                radix_done = (sorted_idx != NULL);
+                            }
+                            scratch_free(ktmp_hdr);
+                            if (sorted_idx != itmp) scratch_free(itmp_hdr);
+                            else radix_itmp_hdr = itmp_hdr;
                         }
-                        scratch_free(ktmp_hdr);
-                        if (sorted_idx != itmp) scratch_free(itmp_hdr);
-                        else radix_itmp_hdr = itmp_hdr;
                     }
                     scratch_free(keys_hdr);
                 }
