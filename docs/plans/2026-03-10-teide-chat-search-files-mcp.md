@@ -626,7 +626,7 @@ cd teidelum && git add src/chat/files.rs src/chat/mod.rs && git commit -m "chat:
 
 **Steps:**
 
-- [ ] Add the `files_download` handler to `teidelum/src/chat/files.rs`.
+- [x] Add the `files_download` handler to `teidelum/src/chat/files.rs`.
 
 Add the following imports at the top of `files.rs` (merge with existing):
 
