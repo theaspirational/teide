@@ -26,7 +26,7 @@ We need the channel name for the title field. The handler already has the channe
 
 **Steps:**
 
-- [ ] In `chat_post_message` in `teidelum/src/chat/handlers.rs`, after the successful message INSERT and before the broadcast, add search indexing. Look up the channel name, then call `state.api.search_engine().index_documents(...)`.
+- [x] In `chat_post_message` in `teidelum/src/chat/handlers.rs`, after the successful message INSERT and before the broadcast, add search indexing. Look up the channel name, then call `state.api.search_engine().index_documents(...)`.
 
 In the `chat_post_message` function, find the section after the message INSERT succeeds (after the mentions parsing block, before the broadcast). Add search indexing there. The complete modified function:
 
