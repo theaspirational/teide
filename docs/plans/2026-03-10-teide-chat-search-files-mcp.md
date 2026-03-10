@@ -191,7 +191,7 @@ cd teidelum && git add src/chat/handlers.rs && git commit -m "chat: index messag
 
 **Steps:**
 
-- [ ] Add the `SearchMessagesRequest` struct and `search_messages` handler function to `teidelum/src/chat/handlers.rs`, after the reactions handlers section.
+- [x] Add the `SearchMessagesRequest` struct and `search_messages` handler function to `teidelum/src/chat/handlers.rs`, after the reactions handlers section.
 
 Add the following after the `ReactionRequest` struct (around line 1214):
 
@@ -257,7 +257,7 @@ pub async fn search_messages(
 }
 ```
 
-- [ ] Add the route for `search.messages` to the `chat_routes` function in the `authed` router section.
+- [x] Add the route for `search.messages` to the `chat_routes` function in the `authed` router section.
 
 In the `chat_routes` function, add this line after the `.route("/reactions.remove", ...)` line:
 
