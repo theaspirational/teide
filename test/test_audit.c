@@ -24,6 +24,7 @@
 #include "munit.h"
 #include <teide/td.h>
 #include <string.h>
+#include <stdint.h>
 
 /* -----------------------------------------------------------------------
  * Helpers
@@ -1125,6 +1126,204 @@ static MunitResult test_join_empty_table(const void* params, void* data) {
 }
 
 /* -----------------------------------------------------------------------
+ * Category 4: Optimizer correctness tests
+ * ----------------------------------------------------------------------- */
+
+/* Integer division by zero: val / 0 → each element should produce 0 → SUM = 0. */
+static MunitResult test_const_fold_div_zero(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* zero = td_const_i64(g, 0);
+    td_op_t* div_op = td_div(g, val, zero);
+    td_op_t* s = td_sum(g, div_op);
+
+    td_t* result = td_execute(g, s);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->i64, ==, 0);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* INT64_MIN / -1 overflow: should not trap, accept any result. */
+static MunitResult test_const_fold_int_overflow(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    int64_t big[] = { INT64_MIN };
+    td_t* v = td_vec_from_raw(TD_I64, big, 1);
+    int64_t name_x = td_sym_intern("x", 1);
+    td_t* tbl = td_table_new(1);
+    tbl = td_table_add_col(tbl, name_x, v);
+    td_release(v);
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* x = td_scan(g, "x");
+    td_op_t* neg1 = td_const_i64(g, -1);
+    td_op_t* div_op = td_div(g, x, neg1);
+    td_op_t* s = td_sum(g, div_op);
+
+    td_t* result = td_execute(g, s);
+    /* Just verify no crash/trap — accept any result */
+    munit_assert_false(TD_IS_ERR(result));
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Predicate pushdown must NOT push filter past GROUP BY.
+ * GROUP BY id, SUM(val) → FILTER(GROUP, sum_col > 40).
+ * Groups: {1:30, 2:70, 3:50}. After filter >40: {2:70, 3:50} → nrows==2. */
+static MunitResult test_predicate_pushdown_group(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* key = td_scan(g, "id");
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* keys[] = { key };
+    td_op_t* agg_ins[] = { val };
+    uint16_t agg_ops[] = { OP_SUM };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 1);
+    td_op_t* forty = td_const_i64(g, 40);
+    /* After GROUP BY, SUM(val) column is named "val_sum" */
+    td_op_t* sum_scan = td_scan(g, "val_sum");
+    td_op_t* pred = td_gt(g, sum_scan, forty);
+    td_op_t* having = td_filter(g, grp, pred);
+
+    td_t* result = td_execute(g, having);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 2);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* DCE must preserve GROUP key and agg_in SCAN nodes.
+ * Build GROUP BY, optimize, then execute optimized plan.
+ * If DCE kills needed nodes, execution crashes. */
+static MunitResult test_dce_preserves_group_keys(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* key = td_scan(g, "id");
+    td_op_t* val = td_scan(g, "val");
+    td_op_t* keys[] = { key };
+    td_op_t* agg_ins[] = { val };
+    uint16_t agg_ops[] = { OP_SUM };
+
+    td_op_t* grp = td_group(g, keys, 1, agg_ops, agg_ins, 1);
+    td_op_t* opt = td_optimize(g, grp);
+    munit_assert_ptr_not_null(opt);
+
+    td_t* result = td_execute(g, opt);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    munit_assert_int(td_table_nrows(result), ==, 3);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Filter reorder correctness: two chained filters.
+ * FILTER(FILTER(table, id>1), val<50). COUNT result.
+ * id>1: rows (2,30),(2,40),(3,50). val<50: (2,30),(2,40) → count==2. */
+static MunitResult test_filter_reorder_correctness(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_t* tbl = make_audit_table();
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* tbl_op = td_const_table(g, tbl);
+    td_op_t* id1 = td_scan(g, "id");
+    td_op_t* one = td_const_i64(g, 1);
+    td_op_t* pred1 = td_gt(g, id1, one);
+    td_op_t* f1 = td_filter(g, tbl_op, pred1);
+
+    td_op_t* val1 = td_scan(g, "val");
+    td_op_t* fifty = td_const_i64(g, 50);
+    td_op_t* pred2 = td_lt(g, val1, fifty);
+    td_op_t* f2 = td_filter(g, f1, pred2);
+
+    td_op_t* cnt = td_count(g, f2);
+
+    td_t* result = td_execute(g, cnt);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->i64, ==, 2);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* -----------------------------------------------------------------------
+ * OP_WCO_JOIN selection audit findings
+ * -----------------------------------------------------------------------
+ *
+ * FINDING: OP_WCO_JOIN does not check or compact g->selection before
+ * calling exec_wco_join(). Analysis shows this is SAFE for the following
+ * reasons:
+ *
+ * 1. exec_wco_join() operates entirely on CSR relation structures
+ *    (td_rel_t) via Leapfrog Triejoin (LFTJ). It does NOT read from
+ *    g->table or scan columns from it. The g->selection bitmap is
+ *    designed to filter rows of g->table, which is irrelevant here.
+ *
+ * 2. td_wco_join() creates nodes with arity=0 (no table inputs).
+ *    It takes pre-built CSR rels directly, so there is no input table
+ *    whose rows could be filtered by g->selection.
+ *
+ * 3. OP_EXPAND (the typical predecessor in graph query pipelines) does
+ *    NOT set or clear g->selection. Instead, it uses its own SIP bitmap
+ *    mechanism (ext->graph.sip_sel) for source-side filtering. The two
+ *    filtering mechanisms are independent.
+ *
+ * 4. The final catch-all compaction in td_execute() (exec.c ~line 12501)
+ *    would apply g->selection to WCO_JOIN's result table if selection
+ *    were non-NULL. In practice, g->selection is always NULL in graph
+ *    query contexts because:
+ *    (a) Graph queries are typically built fresh with td_graph_new(),
+ *        which initializes selection to NULL.
+ *    (b) No graph-path opcode (EXPAND, VAR_EXPAND, SHORTEST_PATH,
+ *        WCO_JOIN) sets g->selection.
+ *
+ * 5. Adding compaction before exec_wco_join would be WRONG because the
+ *    selection bitmap length is based on g->table->nrows, which has no
+ *    relation to the WCO_JOIN output rows (determined by CSR topology).
+ *
+ * STATUS: SAFE — no fix needed.
+ * ----------------------------------------------------------------------- */
+
+/* -----------------------------------------------------------------------
  * Test array + suite registration
  * ----------------------------------------------------------------------- */
 
@@ -1160,6 +1359,12 @@ static MunitTest audit_tests[] = {
     { "/group_empty_table",      test_group_empty_table,      NULL, NULL, 0, NULL },
     { "/sort_empty_table",       test_sort_empty_table,       NULL, NULL, 0, NULL },
     { "/join_empty_table",       test_join_empty_table,       NULL, NULL, 0, NULL },
+    /* Task 10: Category 4 — Optimizer correctness tests */
+    { "/const_fold_div_zero",          test_const_fold_div_zero,          NULL, NULL, 0, NULL },
+    { "/const_fold_int_overflow",      test_const_fold_int_overflow,      NULL, NULL, 0, NULL },
+    { "/predicate_pushdown_group",     test_predicate_pushdown_group,     NULL, NULL, 0, NULL },
+    { "/dce_preserves_group_keys",     test_dce_preserves_group_keys,     NULL, NULL, 0, NULL },
+    { "/filter_reorder_correctness",   test_filter_reorder_correctness,   NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 
