@@ -2707,7 +2707,7 @@ static double detect_sortedness(td_pool_t* pool, const uint64_t* keys, int64_t n
         /* Check cross-task boundaries (each task starts at a TASK_GRAIN
          * boundary; the sortedness_fn only checks within [start+1, end)
          * so boundaries between adjacent tasks are missed). */
-        int64_t grain = 8 * 1024; /* TD_DISPATCH_MORSELS * TD_MORSEL_ELEMS */
+        int64_t grain = TD_DISPATCH_MORSELS * TD_MORSEL_ELEMS;
         for (int64_t b = grain; b < n; b += grain) {
             if (keys[b] < keys[b - 1])
                 total_unsorted++;
@@ -4269,7 +4269,7 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                                     total_not_rev += pd_nr[t];
                                 }
                                 /* Check cross-task boundaries */
-                                int64_t grain = 8 * 1024;
+                                int64_t grain = TD_DISPATCH_MORSELS * TD_MORSEL_ELEMS;
                                 uint64_t key_mask_s =
                                     (key_bits < 64) ? ((1ULL << key_bits) - 1) : ~0ULL;
                                 for (int64_t b = grain; b < nrows; b += grain) {
@@ -4730,7 +4730,7 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
             double* d = (double*)dst;
             for (int64_t i = 0; i < gather_rows; i++) {
                 uint64_t k = sort_key_desc ? ~sorted_keys[i] : sorted_keys[i];
-                uint64_t mask = ((k >> 63) - 1) | ((uint64_t)1 << 63);
+                uint64_t mask = -(k >> 63) | ((uint64_t)1 << 63);
                 uint64_t bits = k ^ mask;
                 memcpy(&d[i], &bits, 8);
             }
