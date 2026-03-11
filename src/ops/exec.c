@@ -1860,7 +1860,7 @@ static void multi_gather_fn(void* raw, uint32_t wid, int64_t start, int64_t end)
      * hardware prefetcher only 1 stream to track (instead of ncols
      * concurrent streams, which overflows the L2 miss queue). */
 #define MG_BATCH 512
-#define MG_PF    16
+#define MG_PF    32
     for (int64_t base = start; base < end; base += MG_BATCH) {
         int64_t bstart = base;
         int64_t bend = base + MG_BATCH;
@@ -2659,6 +2659,73 @@ static void key_introsort(uint64_t* keys, int64_t* idx, int64_t n) {
     key_introsort_impl(keys, idx, n, depth);
 }
 
+/* --------------------------------------------------------------------------
+ * Adaptive pre-sort detection.
+ *
+ * Scans encoded keys to detect already-sorted and nearly-sorted data.
+ * Returns a sortedness metric: fraction of out-of-order pairs [0.0, 1.0].
+ *   0.0 = perfectly sorted → skip sort entirely
+ *   small = nearly sorted → prefer comparison-based sort (adaptive mergesort)
+ *   large = random → use radix sort
+ * -------------------------------------------------------------------------- */
+
+typedef struct {
+    const uint64_t* keys;
+    int64_t*        pw_unsorted; /* per-worker out-of-order count */
+} sortedness_ctx_t;
+
+/* Each worker counts out-of-order pairs in [start, end).
+ * Also checks the boundary: keys[start-1] vs keys[start] (for start > 0). */
+static void sortedness_fn(void* arg, uint32_t wid, int64_t start, int64_t end) {
+    sortedness_ctx_t* c = (sortedness_ctx_t*)arg;
+    const uint64_t* keys = c->keys;
+    int64_t unsorted = 0;
+    for (int64_t i = start + 1; i < end; i++) {
+        if (keys[i] < keys[i - 1]) unsorted++;
+    }
+    c->pw_unsorted[wid] += unsorted;
+}
+
+/* Detect sortedness of encoded keys.  Returns fraction of out-of-order pairs.
+ * If the result is 0.0, data is already sorted and sort can be skipped.
+ * If < threshold (e.g. 0.05), comparison sort is faster than radix. */
+static double detect_sortedness(td_pool_t* pool, const uint64_t* keys, int64_t n) {
+    if (n <= 1) return 0.0;
+
+    int64_t total_unsorted;
+    if (pool && n > SMALL_POOL_THRESHOLD) {
+        uint32_t nw = td_pool_total_workers(pool);
+        int64_t pw[nw];
+        memset(pw, 0, (size_t)nw * sizeof(int64_t));
+        sortedness_ctx_t ctx = { .keys = keys, .pw_unsorted = pw };
+        td_pool_dispatch(pool, sortedness_fn, &ctx, n);
+
+        total_unsorted = 0;
+        for (uint32_t t = 0; t < nw; t++)
+            total_unsorted += pw[t];
+
+        /* Check cross-task boundaries (each task starts at a TASK_GRAIN
+         * boundary; the sortedness_fn only checks within [start+1, end)
+         * so boundaries between adjacent tasks are missed). */
+        int64_t grain = 8 * 1024; /* TD_DISPATCH_MORSELS * TD_MORSEL_ELEMS */
+        for (int64_t b = grain; b < n; b += grain) {
+            if (keys[b] < keys[b - 1])
+                total_unsorted++;
+        }
+    } else {
+        total_unsorted = 0;
+        for (int64_t i = 1; i < n; i++) {
+            if (keys[i] < keys[i - 1]) total_unsorted++;
+        }
+    }
+
+    return (double)total_unsorted / (double)(n - 1);
+}
+
+/* Threshold: if fewer than 5% of pairs are out of order, data is
+ * "nearly sorted" and adaptive comparison sort beats radix. */
+#define NEARLY_SORTED_FRAC 0.05
+
 /* Compute the number of significant bytes for radix sort based on type.
  * Returns 1..8: the number of byte passes radix_sort_run needs. */
 static inline uint8_t radix_key_bytes(int8_t type) {
@@ -2668,6 +2735,55 @@ static inline uint8_t radix_key_bytes(int8_t type) {
     case TD_I32: case TD_DATE: case TD_TIME: return 4;
     default:                    return 8;  /* I64, F64, TIMESTAMP, SYM */
     }
+}
+
+/* Scan encoded keys to compute actual significant byte count from data range.
+ * Eliminates histogram passes for bytes that are uniform across all keys. */
+typedef struct {
+    const uint64_t* keys;
+    uint64_t*       pw_or;   /* per-worker XOR-diff accumulator */
+} key_range_ctx_t;
+
+static void key_range_fn(void* arg, uint32_t wid, int64_t start, int64_t end) {
+    key_range_ctx_t* c = (key_range_ctx_t*)arg;
+    const uint64_t* keys = c->keys;
+    uint64_t local_or = c->pw_or[wid];
+    uint64_t first = keys[start];
+    for (int64_t i = start; i < end; i++)
+        local_or |= keys[i] ^ first;
+    c->pw_or[wid] = local_or;
+}
+
+static uint8_t compute_key_nbytes(td_pool_t* pool, const uint64_t* keys,
+                                    int64_t n, uint8_t type_max) {
+    if (n <= 1) return 1;
+    uint64_t diff;
+    if (pool && n > SMALL_POOL_THRESHOLD) {
+        uint32_t nw = td_pool_total_workers(pool);
+        uint64_t pw_or[nw];
+        memset(pw_or, 0, nw * sizeof(uint64_t));
+        key_range_ctx_t ctx = { .keys = keys, .pw_or = pw_or };
+        td_pool_dispatch(pool, key_range_fn, &ctx, n);
+        diff = 0;
+        for (uint32_t w = 0; w < nw; w++) diff |= pw_or[w];
+        /* Also XOR the first element from different worker ranges to
+         * catch cross-worker differences (workers' "first" may differ) */
+        uint64_t first = keys[0];
+        int64_t chunk = (n + nw - 1) / nw;
+        for (uint32_t w = 1; w < nw; w++) {
+            int64_t wstart = (int64_t)w * chunk;
+            if (wstart < n) diff |= keys[wstart] ^ first;
+        }
+    } else {
+        diff = 0;
+        uint64_t first = keys[0];
+        for (int64_t i = 1; i < n; i++)
+            diff |= keys[i] ^ first;
+    }
+    uint8_t nb = 0;
+    while (diff) { nb++; diff >>= 8; }
+    if (nb < 1) nb = 1;
+    return nb < type_max ? nb : type_max;
 }
 
 /* --------------------------------------------------------------------------
@@ -2723,7 +2839,10 @@ static void radix_hist_fn(void* arg, uint32_t wid, int64_t start, int64_t end) {
         h[(keys[i] >> shift) & 0xFF]++;
 }
 
-/* Phase 3: scatter — each task writes its range to the correct output positions */
+/* Phase 3: scatter with software write-combining (SWC).
+ * Buffers entries per bucket before flushing, converting random writes
+ * into sequential bursts that are friendlier to the cache hierarchy. */
+#define SWC_N 8  /* entries per bucket buffer; 8*8=64B per bucket = 32KB total */
 static void radix_scatter_fn(void* arg, uint32_t wid, int64_t start, int64_t end) {
     (void)wid; (void)end;
     radix_pass_ctx_t* c = (radix_pass_ctx_t*)arg;
@@ -2742,25 +2861,52 @@ static void radix_scatter_fn(void* arg, uint32_t wid, int64_t start, int64_t end
     int64_t*  i_out = c->idx_out;
     uint8_t shift = c->shift;
 
+    /* SWC buffers: separate key/idx arrays to match output layout */
+    uint64_t kbuf[256][SWC_N];
+    int64_t  ibuf[256][SWC_N];
+    uint8_t  bcnt[256];
+    memset(bcnt, 0, 256);
+
     for (int64_t i = lo; i < hi; i++) {
         uint8_t byte = (k_in[i] >> shift) & 0xFF;
-        int64_t pos = off[byte]++;
-        k_out[pos] = k_in[i];
-        i_out[pos] = i_in[i];
+        uint8_t bp = bcnt[byte];
+        kbuf[byte][bp] = k_in[i];
+        ibuf[byte][bp] = i_in[i];
+        if (++bp == SWC_N) {
+            int64_t pos = off[byte];
+            memcpy(&k_out[pos], kbuf[byte], SWC_N * sizeof(uint64_t));
+            memcpy(&i_out[pos], ibuf[byte], SWC_N * sizeof(int64_t));
+            off[byte] = pos + SWC_N;
+            bp = 0;
+        }
+        bcnt[byte] = bp;
+    }
+
+    /* Flush remaining entries */
+    for (int b = 0; b < 256; b++) {
+        int64_t pos = off[b];
+        for (uint8_t j = 0; j < bcnt[b]; j++) {
+            k_out[pos + j] = kbuf[b][j];
+            i_out[pos + j] = ibuf[b][j];
+        }
+        off[b] = pos + bcnt[b];
     }
 }
+#undef SWC_N
 
 /* Run radix sort on pre-encoded uint64_t keys + int64_t indices.
  * n_bytes limits the number of byte passes (1..8) based on key width.
  * Returns pointer to the final sorted index array (either `indices` or
  * `idx_tmp`).  Caller must keep both alive until done reading indices
  * (the result may point into idx_tmp if an odd number of passes executed).
- * The corresponding itmp_hdr must not be freed until after gather completes.
+ * If sorted_keys_out is non-NULL, stores the pointer to the final sorted
+ * keys buffer (either `keys` or `keys_tmp`).
  * Returns NULL on failure. */
 static int64_t* radix_sort_run(td_pool_t* pool,
                                 uint64_t* keys, int64_t* indices,
                                 uint64_t* keys_tmp, int64_t* idx_tmp,
-                                int64_t n, uint8_t n_bytes) {
+                                int64_t n, uint8_t n_bytes,
+                                uint64_t** sorted_keys_out) {
     uint32_t n_tasks = pool ? td_pool_total_workers(pool) : 1;
     if (n_tasks < 1) n_tasks = 1;
 
@@ -2825,12 +2971,229 @@ static int64_t* radix_sort_run(td_pool_t* pool,
 
     scratch_free(hist_hdr);
     scratch_free(off_hdr);
+    if (sorted_keys_out) *sorted_keys_out = src_k;
     return src_i;  /* pointer to final sorted indices */
+}
+
+/* ============================================================================
+ * MSD+LSB hybrid radix sort
+ *
+ * First pass: MSD partition by the most significant non-uniform byte.
+ * Creates up to 256 buckets, each small enough to fit in L2 cache.
+ * Subsequent passes: LSB radix sort within each bucket (in-cache, fast).
+ *
+ * For 10M I64 values with 3 significant bytes:
+ *   LSB: 3 full passes over 160MB (keys+indices) = ~960MB random traffic
+ *   MSD+LSB: 1 full pass + 256 × 2 in-cache passes ≈ ~400MB random + ~5ms in-cache
+ *
+ * Cache behavior: after the first MSD partition, each bucket (10M/256 ≈ 39K
+ * elements ≈ 625KB) fits in L2.  Subsequent passes operate entirely within
+ * cache, making them effectively free compared to the first pass.
+ * ============================================================================ */
+
+/* Per-bucket LSB radix sort (non-parallel, for cache-resident data).
+ * No SWC needed since data fits in L2/L1 cache. */
+static int64_t* bucket_lsb_sort(uint64_t* keys, int64_t* idx,
+                                  uint64_t* ktmp, int64_t* itmp,
+                                  int64_t n, uint8_t n_bytes) {
+    if (n <= 64) {
+        key_introsort(keys, idx, n);
+        return idx;
+    }
+
+    uint64_t* src_k = keys, *dst_k = ktmp;
+    int64_t*  src_i = idx,  *dst_i = itmp;
+
+    for (uint8_t bp = 0; bp < n_bytes; bp++) {
+        uint8_t shift = bp * 8;
+
+        uint32_t hist[256];
+        memset(hist, 0, sizeof(hist));
+        for (int64_t i = 0; i < n; i++)
+            hist[(src_k[i] >> shift) & 0xFF]++;
+
+        /* Check uniformity — skip this byte if all values share the same digit */
+        bool uniform = false;
+        for (int b = 0; b < 256; b++) {
+            if (hist[b] == (uint32_t)n) { uniform = true; break; }
+        }
+        if (uniform) continue;
+
+        /* Prefix sum */
+        int64_t off[256];
+        off[0] = 0;
+        for (int b = 1; b < 256; b++)
+            off[b] = off[b-1] + (int64_t)hist[b-1];
+
+        /* Scatter (no SWC — data is cache-resident) */
+        for (int64_t i = 0; i < n; i++) {
+            uint8_t byte = (src_k[i] >> shift) & 0xFF;
+            int64_t pos = off[byte]++;
+            dst_k[pos] = src_k[i];
+            dst_i[pos] = src_i[i];
+        }
+
+        uint64_t* tk = src_k; src_k = dst_k; dst_k = tk;
+        int64_t*  ti = src_i; src_i = dst_i; dst_i = ti;
+    }
+
+    return src_i;
+}
+
+/* Context for parallel per-bucket sorting after MSD partition */
+typedef struct {
+    uint64_t*  data_k;          /* MSD output: partitioned keys */
+    int64_t*   data_i;          /* MSD output: partitioned indices */
+    uint64_t*  tmp_k;           /* scratch (MSD input buffer, now free) */
+    int64_t*   tmp_i;
+    int64_t    bucket_offsets[257]; /* prefix-sum of bucket sizes */
+    uint8_t    n_bytes;            /* remaining bytes to sort per bucket */
+} msd_bucket_ctx_t;
+
+static void msd_bucket_sort_fn(void* arg, uint32_t wid,
+                                 int64_t start, int64_t end) {
+    (void)wid;
+    msd_bucket_ctx_t* c = (msd_bucket_ctx_t*)arg;
+
+    for (int64_t b = start; b < end; b++) {
+        int64_t off = c->bucket_offsets[b];
+        int64_t cnt = c->bucket_offsets[b + 1] - off;
+        if (cnt <= 1) continue;
+
+        int64_t* sorted = bucket_lsb_sort(
+            c->data_k + off, c->data_i + off,
+            c->tmp_k  + off, c->tmp_i  + off,
+            cnt, c->n_bytes);
+
+        /* Ensure result is in the canonical buffer (data_k/data_i).
+         * bucket_lsb_sort may leave result in the scratch buffer if an
+         * odd number of scatter passes executed. */
+        if (sorted != c->data_i + off) {
+            memcpy(c->data_k + off, c->tmp_k + off,
+                   (size_t)cnt * sizeof(uint64_t));
+            memcpy(c->data_i + off, c->tmp_i + off,
+                   (size_t)cnt * sizeof(int64_t));
+        }
+    }
+}
+
+/* MSD+LSB hybrid radix sort.
+ * Returns pointer to final sorted indices (always idx_tmp).
+ * If sorted_keys_out is non-NULL, stores sorted keys pointer (always keys_tmp).
+ * Falls back to LSB radix sort for small arrays or single-byte keys. */
+static int64_t* msd_radix_sort_run(td_pool_t* pool,
+                                     uint64_t* keys, int64_t* indices,
+                                     uint64_t* keys_tmp, int64_t* idx_tmp,
+                                     int64_t n, uint8_t n_bytes,
+                                     uint64_t** sorted_keys_out) {
+    /* MSD is beneficial when:
+     * (1) Many significant bytes (≥4) — saving 1 of 4+ LSB passes is worth it.
+     * (2) Data is large enough that full passes dominate over MSD overhead.
+     * (3) Average bucket fits in L2 cache (~256KB = 16K elements × 16B).
+     * For ≤3 byte keys, LSB radix with range-adaptive byte skip is already fast
+     * and MSD adds partitioning + dispatch overhead without enough payoff. */
+    if (n_bytes <= 3 || n <= 1000000) {
+        return radix_sort_run(pool, keys, indices, keys_tmp, idx_tmp,
+                               n, n_bytes, sorted_keys_out);
+    }
+
+    uint32_t n_tasks = pool ? td_pool_total_workers(pool) : 1;
+    if (n_tasks < 1) n_tasks = 1;
+
+    /* Allocate histogram and offsets for MSD pass */
+    td_t *hist_hdr = NULL, *off_hdr = NULL;
+    uint32_t* hist = (uint32_t*)scratch_alloc(&hist_hdr,
+                        (size_t)n_tasks * 256 * sizeof(uint32_t));
+    int64_t* offsets = (int64_t*)scratch_alloc(&off_hdr,
+                        (size_t)n_tasks * 256 * sizeof(int64_t));
+    if (!hist || !offsets) {
+        scratch_free(hist_hdr); scratch_free(off_hdr);
+        return radix_sort_run(pool, keys, indices, keys_tmp, idx_tmp,
+                               n, n_bytes, sorted_keys_out);
+    }
+
+    /* MSD pass: partition by the most significant non-uniform byte */
+    uint8_t msd_byte = n_bytes - 1;
+    uint8_t shift = msd_byte * 8;
+
+    radix_pass_ctx_t ctx = {
+        .keys = keys, .idx = indices,
+        .keys_out = keys_tmp, .idx_out = idx_tmp,
+        .n = n, .shift = shift, .n_tasks = n_tasks,
+        .hist = hist, .offsets = offsets,
+    };
+
+    /* Phase 1: parallel histogram */
+    if (pool && n_tasks > 1)
+        td_pool_dispatch_n(pool, radix_hist_fn, &ctx, n_tasks);
+    else
+        radix_hist_fn(&ctx, 0, 0, 1);
+
+    /* Check uniformity */
+    bool uniform = false;
+    for (int b = 0; b < 256; b++) {
+        uint32_t total = 0;
+        for (uint32_t t = 0; t < n_tasks; t++)
+            total += hist[t * 256 + b];
+        if (total == (uint32_t)n) { uniform = true; break; }
+    }
+
+    if (uniform) {
+        /* All keys share the same MSB — skip this byte, try next */
+        scratch_free(hist_hdr); scratch_free(off_hdr);
+        return msd_radix_sort_run(pool, keys, indices, keys_tmp, idx_tmp,
+                                    n, n_bytes - 1, sorted_keys_out);
+    }
+
+    /* Phase 2: prefix sum → per-task scatter offsets + bucket boundaries */
+    int64_t bucket_offsets[257];
+    {
+        int64_t running = 0;
+        for (int b = 0; b < 256; b++) {
+            bucket_offsets[b] = running;
+            for (uint32_t t = 0; t < n_tasks; t++) {
+                offsets[t * 256 + b] = running;
+                running += hist[t * 256 + b];
+            }
+        }
+        bucket_offsets[256] = running;
+    }
+
+    /* Phase 3: parallel scatter with SWC */
+    if (pool && n_tasks > 1)
+        td_pool_dispatch_n(pool, radix_scatter_fn, &ctx, n_tasks);
+    else
+        radix_scatter_fn(&ctx, 0, 0, 1);
+
+    scratch_free(hist_hdr);
+    scratch_free(off_hdr);
+
+    /* Data is now in keys_tmp/idx_tmp, partitioned by MSB.
+     * Sort each bucket independently using the remaining bytes.
+     * Use keys/indices as scratch (MSD input, now free to reuse). */
+    uint8_t remaining_bytes = msd_byte; /* bytes 0..msd_byte-1 */
+
+    msd_bucket_ctx_t bctx = {
+        .data_k = keys_tmp, .data_i = idx_tmp,
+        .tmp_k  = keys,     .tmp_i  = indices,
+        .n_bytes = remaining_bytes,
+    };
+    memcpy(bctx.bucket_offsets, bucket_offsets, sizeof(bucket_offsets));
+
+    if (pool)
+        td_pool_dispatch_n(pool, msd_bucket_sort_fn, &bctx, 256);
+    else
+        msd_bucket_sort_fn(&bctx, 0, 0, 256);
+
+    /* Result is always in keys_tmp/idx_tmp */
+    if (sorted_keys_out) *sorted_keys_out = keys_tmp;
+    return idx_tmp;
 }
 
 /* Key-encoding context for parallel encode phase */
 typedef struct {
     uint64_t*       keys;      /* output */
+    int64_t*        indices;   /* if non-NULL, initialize indices[i]=i (fused iota) */
     /* Single-key fields: */
     const void*     data;      /* raw column data */
     int8_t          type;      /* column type */
@@ -2852,6 +3215,12 @@ typedef struct {
 static void radix_encode_fn(void* arg, uint32_t wid, int64_t start, int64_t end) {
     (void)wid;
     radix_encode_ctx_t* c = (radix_encode_ctx_t*)arg;
+
+    /* Fused iota: initialize index array alongside key encoding */
+    if (c->indices) {
+        int64_t* idx = c->indices;
+        for (int64_t i = start; i < end; i++) idx[i] = i;
+    }
 
     if (c->n_keys <= 1) {
         /* Single-key fast path */
@@ -3514,11 +3883,12 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
     uint8_t n_sort = ext->sort.n_cols;
     if (n_sort > 16) return TD_ERR_PTR(TD_ERR_NYI); /* radix_encode_ctx_t limit */
 
-    /* Allocate index array */
+    /* Allocate index array (iota deferred: radix path fuses with encode,
+     * merge sort path initializes before sorting) */
     td_t* indices_hdr;
     int64_t* indices = (int64_t*)scratch_alloc(&indices_hdr, (size_t)nrows * sizeof(int64_t));
     if (!indices) return TD_ERR_PTR(TD_ERR_OOM);
-    for (int64_t i = 0; i < nrows; i++) indices[i] = i;
+    bool iota_done = false;
 
     /* Resolve sort key vectors */
     td_t* sort_vecs[n_sort > 0 ? n_sort : 1];
@@ -3555,6 +3925,13 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
     bool radix_done = false;
     int64_t* sorted_idx = indices;  /* may point to itmp after radix sort */
     td_t* radix_itmp_hdr = NULL;   /* kept alive until after gather */
+    /* Sorted keys: for single-key radix sort, we can decode sorted keys
+     * instead of random-access gather, converting random reads to sequential. */
+    uint64_t* sorted_keys = NULL;
+    td_t* sorted_keys_hdr = NULL;  /* keep alive until after gather */
+    int8_t sort_key_type = 0;      /* type of sort key for decode */
+    bool sort_key_desc = false;
+    int64_t sort_key_sym = -1;     /* column name of single sort key (for matching) */
     td_t* enum_rank_hdrs[n_sort];
     memset(enum_rank_hdrs, 0, n_sort * sizeof(td_t*));
 
@@ -3589,7 +3966,7 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                 /* --- Single-key sort --- */
                 bool use_topn = (limit > 0 && limit <= TOPN_MAX
                                  && nrows > limit * 8);
-                uint8_t key_nbytes = radix_key_bytes(sort_vecs[0]->type);
+                uint8_t key_nbytes_max = radix_key_bytes(sort_vecs[0]->type);
                 /* Skip pool for small arrays — dispatch overhead dominates */
                 td_pool_t* sk_pool = (nrows >= SMALL_POOL_THRESHOLD) ? pool : NULL;
 
@@ -3602,7 +3979,8 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                     /* Default: ASC → nulls last (nf=0), DESC → nulls first (nf=1) */
                     bool nf = ext->sort.nulls_first ? ext->sort.nulls_first[0] : desc;
                     radix_encode_ctx_t enc = {
-                        .keys = keys, .data = td_data(sort_vecs[0]),
+                        .keys = keys, .indices = indices,
+                        .data = td_data(sort_vecs[0]),
                         .type = sort_vecs[0]->type,
                         .col_attrs = sort_vecs[0]->attrs,
                         .desc = desc,
@@ -3613,8 +3991,17 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                         td_pool_dispatch(sk_pool, radix_encode_fn, &enc, nrows);
                     else
                         radix_encode_fn(&enc, 0, 0, nrows);
+                    iota_done = true;
 
-                    if (use_topn) {
+                    /* Adaptive: detect sortedness before choosing algorithm.
+                     * One parallel scan over encoded keys to count inversions. */
+                    double unsorted_frac = detect_sortedness(sk_pool, keys, nrows);
+
+                    if (unsorted_frac == 0.0) {
+                        /* Already sorted — identity permutation, skip sort */
+                        sorted_idx = indices;
+                        radix_done = true;
+                    } else if (use_topn) {
                         /* Top-N heap selection (1 pass over keys) */
                         uint32_t nw = sk_pool ? td_pool_total_workers(sk_pool) : 1;
                         td_t* heaps_hdr;
@@ -3637,6 +4024,12 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                             radix_done = true;
                         }
                         scratch_free(heaps_hdr);
+                    } else if (unsorted_frac < NEARLY_SORTED_FRAC) {
+                        /* Nearly sorted — introsort beats radix (adaptive
+                         * to existing order, avoids multi-pass scatter). */
+                        key_introsort(keys, indices, nrows);
+                        sorted_idx = indices;
+                        radix_done = true;
                     } else if (nrows <= RADIX_SORT_THRESHOLD) {
                         /* Introsort on encoded keys — faster than multi-pass
                          * radix for small arrays (avoids scatter overhead). */
@@ -3644,24 +4037,49 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                         sorted_idx = indices;
                         radix_done = true;
                     } else {
-                        /* Radix sort with type-aware pass count */
+                        /* Data-range-adaptive byte count: scan encoded keys
+                         * to skip bytes that are uniform across all values,
+                         * avoiding wasteful histogram passes. */
+                        uint8_t key_nbytes = compute_key_nbytes(
+                            sk_pool, keys, nrows, key_nbytes_max);
+                        /* Radix sort with range-aware pass count */
                         td_t *ktmp_hdr, *itmp_hdr;
                         uint64_t* ktmp = (uint64_t*)scratch_alloc(&ktmp_hdr,
                                             (size_t)nrows * sizeof(uint64_t));
                         int64_t*  itmp = (int64_t*)scratch_alloc(&itmp_hdr,
                                             (size_t)nrows * sizeof(int64_t));
                         if (ktmp && itmp) {
-                            sorted_idx = radix_sort_run(sk_pool, keys, indices,
-                                                         ktmp, itmp, nrows,
-                                                         key_nbytes);
+                            uint64_t* sk_out = NULL;
+                            sorted_idx = msd_radix_sort_run(sk_pool, keys, indices,
+                                                             ktmp, itmp, nrows,
+                                                             key_nbytes, &sk_out);
                             radix_done = (sorted_idx != NULL);
+                            /* Track sorted keys for decode-gather optimization.
+                             * Only for non-SYM single-key sorts where we can
+                             * decode the encoded key back to the original value. */
+                            if (radix_done && sk_out && !TD_IS_SYM(sort_vecs[0]->type)) {
+                                sorted_keys = sk_out;
+                                sort_key_type = sort_vecs[0]->type;
+                                sort_key_desc = desc;
+                                /* Identify sort key column name for gather skip */
+                                td_op_ext_t* key_ext = find_ext(g, ext->sort.columns[0]->id);
+                                if (key_ext && key_ext->base.opcode == OP_SCAN)
+                                    sort_key_sym = key_ext->sym;
+                                /* Keep the keys buffer alive */
+                                if (sk_out == keys)
+                                    sorted_keys_hdr = keys_hdr;
+                                else
+                                    sorted_keys_hdr = ktmp_hdr;
+                            }
                         }
-                        scratch_free(ktmp_hdr);
+                        if (!sorted_keys_hdr || sorted_keys_hdr != ktmp_hdr)
+                            scratch_free(ktmp_hdr);
                         if (sorted_idx != itmp) scratch_free(itmp_hdr);
                         else radix_itmp_hdr = itmp_hdr;
                     }
                 }
-                scratch_free(keys_hdr);
+                if (!sorted_keys_hdr || sorted_keys_hdr != keys_hdr)
+                    scratch_free(keys_hdr);
 
             } else if (can_radix && n_sort > 1) {
                 /* --- Multi-key composite radix sort --- */
@@ -3821,7 +4239,8 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                                             (size_t)nrows * sizeof(uint64_t));
                         if (keys) {
                             radix_encode_ctx_t enc = {
-                                .keys = keys, .n_keys = n_sort, .vecs = sort_vecs,
+                                .keys = keys, .indices = indices,
+                                .n_keys = n_sort, .vecs = sort_vecs,
                             };
                             for (uint8_t k = 0; k < n_sort; k++) {
                                 enc.mins[k] = mins[k];
@@ -3834,9 +4253,18 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                                 td_pool_dispatch(mk_pool, radix_encode_fn, &enc, nrows);
                             else
                                 radix_encode_fn(&enc, 0, 0, nrows);
+                            iota_done = true;
 
-                            if (nrows <= RADIX_SORT_THRESHOLD) {
-                                /* Introsort for small composite-key arrays */
+                            /* Adaptive: detect sortedness */
+                            double unsorted_frac = detect_sortedness(mk_pool, keys, nrows);
+
+                            if (unsorted_frac == 0.0) {
+                                /* Already sorted */
+                                sorted_idx = indices;
+                                radix_done = true;
+                            } else if (unsorted_frac < NEARLY_SORTED_FRAC
+                                       || nrows <= RADIX_SORT_THRESHOLD) {
+                                /* Nearly sorted or small — introsort */
                                 key_introsort(keys, indices, nrows);
                                 sorted_idx = indices;
                                 radix_done = true;
@@ -3848,9 +4276,9 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                                 int64_t*  itmp = (int64_t*)scratch_alloc(&itmp_hdr,
                                                     (size_t)nrows * sizeof(int64_t));
                                 if (ktmp && itmp) {
-                                    sorted_idx = radix_sort_run(mk_pool, keys, indices,
-                                                                 ktmp, itmp, nrows,
-                                                                 comp_nbytes);
+                                    sorted_idx = msd_radix_sort_run(mk_pool, keys, indices,
+                                                                     ktmp, itmp, nrows,
+                                                                     comp_nbytes, NULL);
                                     radix_done = (sorted_idx != NULL);
                                 }
                                 scratch_free(ktmp_hdr);
@@ -3867,6 +4295,8 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
 
     /* --- Merge sort fallback ------------------------------------------------ */
     if (!radix_done) {
+        if (!iota_done)
+            for (int64_t i = 0; i < nrows; i++) indices[i] = i;
         sort_cmp_ctx_t cmp_ctx = {
             .vecs = sort_vecs,
             .desc = ext->sort.desc,
@@ -3938,6 +4368,7 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                     td_release(sort_vecs[k]);
                 scratch_free(enum_rank_hdrs[k]);
             }
+            scratch_free(sorted_keys_hdr);
             scratch_free(radix_itmp_hdr);
             scratch_free(indices_hdr);
             return TD_ERR_PTR(TD_ERR_CANCEL);
@@ -3956,6 +4387,7 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                 td_release(sort_vecs[k]);
             scratch_free(enum_rank_hdrs[k]);
         }
+        scratch_free(sorted_keys_hdr);
         scratch_free(radix_itmp_hdr);
         scratch_free(indices_hdr);
         return result;
@@ -3978,11 +4410,76 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
         valid_ncols++;
     }
 
+    /* Decode-gather: for the sort key column, decode sorted keys directly
+     * (sequential read) instead of random-access gather from source.
+     * This converts O(n) random reads into O(n) sequential reads. */
+    int64_t decode_col_idx = -1;  /* column index that gets decode instead of gather */
+    if (sorted_keys && sort_key_sym >= 0) {
+        for (int64_t c = 0; c < ncols; c++) {
+            if (col_names[c] == sort_key_sym && new_cols[c]) {
+                decode_col_idx = c;
+                break;
+            }
+        }
+    }
+
+    /* Perform decode-gather for the sort key column if applicable */
+    if (decode_col_idx >= 0) {
+        void* dst = td_data(new_cols[decode_col_idx]);
+        if (sort_key_type == TD_I64 || sort_key_type == TD_TIMESTAMP) {
+            int64_t* d = (int64_t*)dst;
+            if (sort_key_desc) {
+                for (int64_t i = 0; i < gather_rows; i++)
+                    d[i] = (int64_t)(~sorted_keys[i] ^ ((uint64_t)1 << 63));
+            } else {
+                for (int64_t i = 0; i < gather_rows; i++)
+                    d[i] = (int64_t)(sorted_keys[i] ^ ((uint64_t)1 << 63));
+            }
+        } else if (sort_key_type == TD_F64) {
+            double* d = (double*)dst;
+            for (int64_t i = 0; i < gather_rows; i++) {
+                uint64_t k = sort_key_desc ? ~sorted_keys[i] : sorted_keys[i];
+                uint64_t mask = ((k >> 63) - 1) | ((uint64_t)1 << 63);
+                uint64_t bits = k ^ mask;
+                memcpy(&d[i], &bits, 8);
+            }
+        } else if (sort_key_type == TD_I32 || sort_key_type == TD_DATE
+                   || sort_key_type == TD_TIME) {
+            int32_t* d = (int32_t*)dst;
+            if (sort_key_desc) {
+                for (int64_t i = 0; i < gather_rows; i++)
+                    d[i] = (int32_t)((uint32_t)(~sorted_keys[i]) ^ ((uint32_t)1 << 31));
+            } else {
+                for (int64_t i = 0; i < gather_rows; i++)
+                    d[i] = (int32_t)((uint32_t)sorted_keys[i] ^ ((uint32_t)1 << 31));
+            }
+        } else if (sort_key_type == TD_I16) {
+            int16_t* d = (int16_t*)dst;
+            if (sort_key_desc) {
+                for (int64_t i = 0; i < gather_rows; i++)
+                    d[i] = (int16_t)((uint16_t)(~sorted_keys[i]) ^ ((uint16_t)1 << 15));
+            } else {
+                for (int64_t i = 0; i < gather_rows; i++)
+                    d[i] = (int16_t)((uint16_t)sorted_keys[i] ^ ((uint16_t)1 << 15));
+            }
+        } else if (sort_key_type == TD_BOOL || sort_key_type == TD_U8) {
+            uint8_t* d = (uint8_t*)dst;
+            if (sort_key_desc) {
+                for (int64_t i = 0; i < gather_rows; i++)
+                    d[i] = (uint8_t)(~sorted_keys[i]);
+            } else {
+                for (int64_t i = 0; i < gather_rows; i++)
+                    d[i] = (uint8_t)sorted_keys[i];
+            }
+        }
+    }
+
+    /* Gather remaining columns (skip decode_col_idx if already decoded) */
     if (gather_pool && valid_ncols > 0 && valid_ncols <= MGATHER_MAX_COLS) {
         /* Fused multi-column gather: one pass over indices for all columns */
         multi_gather_ctx_t mgctx = { .idx = sorted_idx, .ncols = 0 };
         for (int64_t c = 0; c < ncols; c++) {
-            if (!new_cols[c]) continue;
+            if (!new_cols[c] || c == decode_col_idx) continue;
             td_t* col = td_table_get_col_idx(tbl, c);
             int64_t ci = mgctx.ncols;
             mgctx.srcs[ci] = (char*)td_data(col);
@@ -3990,10 +4487,12 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
             mgctx.esz[ci]  = col_esz(col);
             mgctx.ncols++;
         }
-        td_pool_dispatch(gather_pool, multi_gather_fn, &mgctx, gather_rows);
+        if (mgctx.ncols > 0)
+            td_pool_dispatch(gather_pool, multi_gather_fn, &mgctx, gather_rows);
     } else {
         /* Fallback: per-column gather */
         for (int64_t c = 0; c < ncols; c++) {
+            if (c == decode_col_idx) continue;
             td_t* col = td_table_get_col_idx(tbl, c);
             if (!col || !new_cols[c]) continue;
             if (gather_pool) {
@@ -4025,6 +4524,7 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
         scratch_free(enum_rank_hdrs[k]);
     }
 
+    scratch_free(sorted_keys_hdr);
     scratch_free(radix_itmp_hdr);
     scratch_free(indices_hdr);
     return result;
@@ -10652,7 +11152,7 @@ static td_t* exec_window(td_graph_t* g, td_op_t* op, td_t* tbl) {
                         if (ktmp && itmp) {
                             sorted_idx = radix_sort_run(sk_pool, keys, indices,
                                                          ktmp, itmp, nrows,
-                                                         key_nbytes);
+                                                         key_nbytes, NULL);
                             radix_done = (sorted_idx != NULL);
                         }
                         scratch_free(ktmp_hdr);
@@ -10808,7 +11308,7 @@ static td_t* exec_window(td_graph_t* g, td_op_t* op, td_t* tbl) {
                             if (ktmp && itmp) {
                                 sorted_idx = radix_sort_run(mk_pool, keys, indices,
                                                              ktmp, itmp, nrows,
-                                                             comp_nbytes);
+                                                             comp_nbytes, NULL);
                                 radix_done = (sorted_idx != NULL);
                             }
                             scratch_free(ktmp_hdr);
