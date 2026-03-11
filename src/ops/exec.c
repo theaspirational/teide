@@ -2976,6 +2976,198 @@ static int64_t* radix_sort_run(td_pool_t* pool,
 }
 
 /* ============================================================================
+ * Packed radix sort — key+index in a single uint64_t
+ *
+ * When key_nbytes * 8 + index_bits ≤ 64, we pack the encoded key and the
+ * row index into one uint64_t:
+ *   packed[i] = encoded_key[i] | ((uint64_t)i << idx_shift)
+ *
+ * Radix sort then moves ONE 8-byte value per element per pass instead of
+ * TWO 8-byte values (key + index).  This halves all memory traffic:
+ *   - SWC buffer: 16KB instead of 32KB (fits better in L1)
+ *   - Scatter writes: 8B instead of 16B per element
+ *   - Total traffic per pass: n×8B instead of n×16B
+ *
+ * After sorting, indices are extracted: idx = packed >> idx_shift
+ * ============================================================================ */
+
+/* Packed scatter: single-array SWC scatter, no separate index array. */
+#define PSWC_N 8
+static void packed_scatter_fn(void* arg, uint32_t wid, int64_t start, int64_t end) {
+    (void)wid; (void)end;
+    radix_pass_ctx_t* c = (radix_pass_ctx_t*)arg;
+    int64_t task = start;
+
+    int64_t chunk = (c->n + c->n_tasks - 1) / c->n_tasks;
+    int64_t lo = task * chunk;
+    int64_t hi = lo + chunk;
+    if (hi > c->n) hi = c->n;
+    if (lo >= hi) return;
+
+    int64_t* off = c->offsets + task * 256;
+    const uint64_t* in  = c->keys;
+    uint64_t*       out = c->keys_out;
+    uint8_t shift = c->shift;
+
+    /* Single SWC buffer: 256 × 8 × 8B = 16KB — fits in L1 */
+    uint64_t buf[256][PSWC_N];
+    uint8_t  bcnt[256];
+    memset(bcnt, 0, 256);
+
+    for (int64_t i = lo; i < hi; i++) {
+        uint8_t byte = (in[i] >> shift) & 0xFF;
+        uint8_t bp = bcnt[byte];
+        buf[byte][bp] = in[i];
+        if (++bp == PSWC_N) {
+            int64_t pos = off[byte];
+            memcpy(&out[pos], buf[byte], PSWC_N * sizeof(uint64_t));
+            off[byte] = pos + PSWC_N;
+            bp = 0;
+        }
+        bcnt[byte] = bp;
+    }
+
+    /* Flush remaining entries */
+    for (int b = 0; b < 256; b++) {
+        int64_t pos = off[b];
+        for (uint8_t j = 0; j < bcnt[b]; j++)
+            out[pos + j] = buf[b][j];
+        off[b] = pos + bcnt[b];
+    }
+}
+#undef PSWC_N
+
+/* Packed radix sort: sorts an array of packed (key|index) uint64_t values.
+ * Sorts by bytes lo_byte to hi_byte-1 (the key bytes).
+ * Returns pointer to final sorted array (data or tmp). */
+static uint64_t* packed_radix_sort_run(td_pool_t* pool,
+                                         uint64_t* data, uint64_t* tmp,
+                                         int64_t n, uint8_t n_bytes) {
+    uint32_t n_tasks = pool ? td_pool_total_workers(pool) : 1;
+    if (n_tasks < 1) n_tasks = 1;
+
+    td_t *hist_hdr = NULL, *off_hdr = NULL;
+    uint32_t* hist = (uint32_t*)scratch_alloc(&hist_hdr,
+                        (size_t)n_tasks * 256 * sizeof(uint32_t));
+    int64_t* offsets = (int64_t*)scratch_alloc(&off_hdr,
+                        (size_t)n_tasks * 256 * sizeof(int64_t));
+    if (!hist || !offsets) {
+        scratch_free(hist_hdr); scratch_free(off_hdr);
+        return NULL;
+    }
+
+    uint64_t* src = data, *dst = tmp;
+
+    for (uint8_t bp = 0; bp < n_bytes; bp++) {
+        uint8_t shift = bp * 8;
+
+        /* Reuse radix_pass_ctx_t — only .keys and .keys_out are used
+         * by radix_hist_fn and packed_scatter_fn. */
+        radix_pass_ctx_t ctx = {
+            .keys = src, .keys_out = dst,
+            .n = n, .shift = shift, .n_tasks = n_tasks,
+            .hist = hist, .offsets = offsets,
+        };
+
+        /* Phase 1: parallel histogram (reuses existing radix_hist_fn) */
+        if (pool && n_tasks > 1)
+            td_pool_dispatch_n(pool, radix_hist_fn, &ctx, n_tasks);
+        else
+            radix_hist_fn(&ctx, 0, 0, 1);
+
+        /* Check uniformity */
+        bool uniform = false;
+        for (int b = 0; b < 256; b++) {
+            uint32_t total = 0;
+            for (uint32_t t = 0; t < n_tasks; t++)
+                total += hist[t * 256 + b];
+            if (total == (uint32_t)n) { uniform = true; break; }
+        }
+        if (uniform) continue;
+
+        /* Phase 2: prefix sum */
+        int64_t running = 0;
+        for (int b = 0; b < 256; b++) {
+            for (uint32_t t = 0; t < n_tasks; t++) {
+                offsets[t * 256 + b] = running;
+                running += hist[t * 256 + b];
+            }
+        }
+
+        /* Phase 3: packed scatter (half the traffic of dual-array scatter) */
+        if (pool && n_tasks > 1)
+            td_pool_dispatch_n(pool, packed_scatter_fn, &ctx, n_tasks);
+        else
+            packed_scatter_fn(&ctx, 0, 0, 1);
+
+        uint64_t* t2 = src; src = dst; dst = t2;
+    }
+
+    scratch_free(hist_hdr);
+    scratch_free(off_hdr);
+    return src;
+}
+
+/* Fused pack + sortedness detection for packed radix sort.
+ * Packs keys[i] |= (i << key_bits) in-place while counting:
+ *   - forward inversions (keys[i] < keys[i-1]) → unsorted
+ *   - reverse inversions (keys[i] > keys[i-1]) → not_reverse
+ * If unsorted==0: already sorted. If not_reverse==0: reverse-sorted. */
+typedef struct {
+    uint64_t* keys;
+    uint8_t   key_bits;
+    uint64_t  key_mask;       /* mask for significant key bytes */
+    int64_t*  pw_unsorted;    /* count of forward inversions */
+    int64_t*  pw_not_reverse; /* count of strict ascending pairs */
+} packed_detect_ctx_t;
+
+static void packed_detect_fn(void* arg, uint32_t wid,
+                              int64_t start, int64_t end) {
+    packed_detect_ctx_t* c = (packed_detect_ctx_t*)arg;
+    uint64_t* k = c->keys;
+    uint8_t kb = c->key_bits;
+    uint64_t km = c->key_mask;
+    int64_t unsorted = 0, not_rev = 0;
+    uint64_t prev = (start > 0) ? (k[start - 1] & km) : 0;
+    for (int64_t i = start; i < end; i++) {
+        uint64_t cur = k[i] & km;  /* mask to significant bytes */
+        if (i > start) {
+            if (cur < prev) unsorted++;
+            if (cur > prev) not_rev++;
+        }
+        /* Pack: significant key bits | (index << key_bits) */
+        k[i] = cur | ((uint64_t)i << kb);
+        prev = cur;
+    }
+    c->pw_unsorted[wid] += unsorted;
+    c->pw_not_reverse[wid] += not_rev;
+}
+
+/* Parallel unpack: extract indices (and optionally sorted keys) from
+ * packed values after packed radix sort. */
+typedef struct {
+    const uint64_t* sorted;
+    int64_t*        indices;
+    uint64_t*       keys_out;
+    uint8_t         key_bits;
+    uint64_t        idx_mask;
+    uint64_t        key_mask;
+    bool            extract_keys;
+} packed_unpack_ctx_t;
+
+static void packed_unpack_fn(void* arg, uint32_t wid,
+                              int64_t start, int64_t end) {
+    (void)wid;
+    packed_unpack_ctx_t* c = (packed_unpack_ctx_t*)arg;
+    for (int64_t i = start; i < end; i++) {
+        uint64_t v = c->sorted[i];
+        c->indices[i] = (int64_t)((v >> c->key_bits) & c->idx_mask);
+        if (c->extract_keys)
+            c->keys_out[i] = v & c->key_mask;
+    }
+}
+
+/* ============================================================================
  * MSD+LSB hybrid radix sort
  *
  * First pass: MSD partition by the most significant non-uniform byte.
@@ -3092,7 +3284,10 @@ static int64_t* msd_radix_sort_run(td_pool_t* pool,
      * (3) Average bucket fits in L2 cache (~256KB = 16K elements × 16B).
      * For ≤3 byte keys, LSB radix with range-adaptive byte skip is already fast
      * and MSD adds partitioning + dispatch overhead without enough payoff. */
-    if (n_bytes <= 3 || n <= 1000000) {
+    /* MSD adds partitioning + dispatch overhead that only pays off for
+     * very wide keys (≥6 bytes) where saving multiple LSB passes matters.
+     * For typical data (≤5 bytes after range analysis), LSB with SWC is faster. */
+    if (n_bytes <= 5 || n <= 1000000) {
         return radix_sort_run(pool, keys, indices, keys_tmp, idx_tmp,
                                n, n_bytes, sorted_keys_out);
     }
@@ -3993,15 +4188,7 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                         radix_encode_fn(&enc, 0, 0, nrows);
                     iota_done = true;
 
-                    /* Adaptive: detect sortedness before choosing algorithm.
-                     * One parallel scan over encoded keys to count inversions. */
-                    double unsorted_frac = detect_sortedness(sk_pool, keys, nrows);
-
-                    if (unsorted_frac == 0.0) {
-                        /* Already sorted — identity permutation, skip sort */
-                        sorted_idx = indices;
-                        radix_done = true;
-                    } else if (use_topn) {
+                    if (use_topn) {
                         /* Top-N heap selection (1 pass over keys) */
                         uint32_t nw = sk_pool ? td_pool_total_workers(sk_pool) : 1;
                         td_t* heaps_hdr;
@@ -4024,12 +4211,6 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                             radix_done = true;
                         }
                         scratch_free(heaps_hdr);
-                    } else if (unsorted_frac < NEARLY_SORTED_FRAC) {
-                        /* Nearly sorted — introsort beats radix (adaptive
-                         * to existing order, avoids multi-pass scatter). */
-                        key_introsort(keys, indices, nrows);
-                        sorted_idx = indices;
-                        radix_done = true;
                     } else if (nrows <= RADIX_SORT_THRESHOLD) {
                         /* Introsort on encoded keys — faster than multi-pass
                          * radix for small arrays (avoids scatter overhead). */
@@ -4042,40 +4223,151 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                          * avoiding wasteful histogram passes. */
                         uint8_t key_nbytes = compute_key_nbytes(
                             sk_pool, keys, nrows, key_nbytes_max);
-                        /* Radix sort with range-aware pass count */
-                        td_t *ktmp_hdr, *itmp_hdr;
-                        uint64_t* ktmp = (uint64_t*)scratch_alloc(&ktmp_hdr,
-                                            (size_t)nrows * sizeof(uint64_t));
-                        int64_t*  itmp = (int64_t*)scratch_alloc(&itmp_hdr,
-                                            (size_t)nrows * sizeof(int64_t));
-                        if (ktmp && itmp) {
-                            uint64_t* sk_out = NULL;
-                            sorted_idx = msd_radix_sort_run(sk_pool, keys, indices,
-                                                             ktmp, itmp, nrows,
-                                                             key_nbytes, &sk_out);
-                            radix_done = (sorted_idx != NULL);
-                            /* Track sorted keys for decode-gather optimization.
-                             * Only for non-SYM single-key sorts where we can
-                             * decode the encoded key back to the original value. */
-                            if (radix_done && sk_out && !TD_IS_SYM(sort_vecs[0]->type)) {
-                                sorted_keys = sk_out;
-                                sort_key_type = sort_vecs[0]->type;
-                                sort_key_desc = desc;
-                                /* Identify sort key column name for gather skip */
-                                td_op_ext_t* key_ext = find_ext(g, ext->sort.columns[0]->id);
-                                if (key_ext && key_ext->base.opcode == OP_SCAN)
-                                    sort_key_sym = key_ext->sym;
-                                /* Keep the keys buffer alive */
-                                if (sk_out == keys)
-                                    sorted_keys_hdr = keys_hdr;
+
+                        /* Try packed radix sort: pack key + index into one
+                         * uint64_t to halve memory traffic per pass.
+                         * Feasible when key_nbytes*8 + index_bits ≤ 64. */
+                        uint8_t idx_bits = 0;
+                        { int64_t nn = nrows; while (nn > 0) { idx_bits++; nn >>= 1; } }
+                        /* Packed sort halves memory traffic per pass but adds
+                         * pack/unpack overhead. Worth it for ≤3 byte keys (where
+                         * pack+unpack cost < saved traffic per pass). */
+                        bool use_packed = (key_nbytes <= 3
+                                           && key_nbytes * 8 + idx_bits <= 64);
+
+                        if (use_packed) {
+                            /* Pack: packed[i] = key[i] | ((uint64_t)i << key_bits)
+                             * Sort by bytes 0..key_nbytes-1 (the key bytes).
+                             * After sort: index = packed >> key_bits */
+                            uint8_t key_bits = key_nbytes * 8;
+                            td_t *ptmp_hdr;
+                            uint64_t* ptmp = (uint64_t*)scratch_alloc(&ptmp_hdr,
+                                                (size_t)nrows * sizeof(uint64_t));
+                            if (ptmp) {
+                                /* Fuse packing with sortedness + reverse detection */
+                                uint32_t pd_nw = sk_pool ? td_pool_total_workers(sk_pool) : 1;
+                                int64_t pd_pw[pd_nw], pd_nr[pd_nw];
+                                memset(pd_pw, 0, (size_t)pd_nw * sizeof(int64_t));
+                                memset(pd_nr, 0, (size_t)pd_nw * sizeof(int64_t));
+                                uint64_t key_mask_pd =
+                                    (key_bits < 64) ? ((1ULL << key_bits) - 1) : ~0ULL;
+                                packed_detect_ctx_t pd_ctx = {
+                                    .keys = keys, .key_bits = key_bits,
+                                    .key_mask = key_mask_pd,
+                                    .pw_unsorted = pd_pw, .pw_not_reverse = pd_nr,
+                                };
+
+                                if (sk_pool)
+                                    td_pool_dispatch(sk_pool, packed_detect_fn, &pd_ctx, nrows);
                                 else
-                                    sorted_keys_hdr = ktmp_hdr;
+                                    packed_detect_fn(&pd_ctx, 0, 0, nrows);
+
+                                /* Aggregate sortedness results */
+                                int64_t total_unsorted = 0, total_not_rev = 0;
+                                for (uint32_t t = 0; t < pd_nw; t++) {
+                                    total_unsorted += pd_pw[t];
+                                    total_not_rev += pd_nr[t];
+                                }
+                                /* Check cross-task boundaries */
+                                int64_t grain = 8 * 1024;
+                                uint64_t key_mask_s =
+                                    (key_bits < 64) ? ((1ULL << key_bits) - 1) : ~0ULL;
+                                for (int64_t b = grain; b < nrows; b += grain) {
+                                    uint64_t ka = keys[b-1] & key_mask_s;
+                                    uint64_t kb2 = keys[b] & key_mask_s;
+                                    if (kb2 < ka) total_unsorted++;
+                                    if (kb2 > ka) total_not_rev++;
+                                }
+
+                                if (total_unsorted == 0) {
+                                    /* Already sorted — identity permutation */
+                                    sorted_idx = indices;
+                                    radix_done = true;
+                                } else if (total_not_rev == 0 && nrows > 1) {
+                                    /* Reverse-sorted — reverse indices in O(n) */
+                                    for (int64_t i = 0; i < nrows; i++)
+                                        indices[i] = nrows - 1 - i;
+                                    sorted_idx = indices;
+                                    radix_done = true;
+                                } else {
+                                    /* Packed radix sort — half the memory traffic */
+                                    uint64_t* sorted = packed_radix_sort_run(
+                                        sk_pool, keys, ptmp, nrows, key_nbytes);
+
+                                    if (sorted) {
+                                        uint64_t idx_mask =
+                                            (idx_bits < 64) ? ((1ULL << idx_bits) - 1) : ~0ULL;
+                                        bool do_decode = !TD_IS_SYM(sort_vecs[0]->type);
+                                        uint64_t key_mask =
+                                            (key_bits < 64) ? ((1ULL << key_bits) - 1) : ~0ULL;
+
+                                        packed_unpack_ctx_t up = {
+                                            .sorted = sorted, .indices = indices,
+                                            .keys_out = do_decode ? keys : NULL,
+                                            .key_bits = key_bits,
+                                            .idx_mask = idx_mask, .key_mask = key_mask,
+                                            .extract_keys = do_decode,
+                                        };
+                                        if (sk_pool)
+                                            td_pool_dispatch(sk_pool, packed_unpack_fn, &up, nrows);
+                                        else
+                                            packed_unpack_fn(&up, 0, 0, nrows);
+
+                                        sorted_idx = indices;
+                                        radix_done = true;
+
+                                        if (do_decode) {
+                                            sorted_keys = keys;
+                                            sort_key_type = sort_vecs[0]->type;
+                                            sort_key_desc = desc;
+                                            td_op_ext_t* key_ext = find_ext(g, ext->sort.columns[0]->id);
+                                            if (key_ext && key_ext->base.opcode == OP_SCAN)
+                                                sort_key_sym = key_ext->sym;
+                                            sorted_keys_hdr = keys_hdr;
+                                        }
+                                    }
+                                }
+                            }
+                            scratch_free(ptmp_hdr);
+                        } else {
+                            /* Non-packed path: detect sortedness first */
+                            double us_frac2 = detect_sortedness(sk_pool, keys, nrows);
+                            if (us_frac2 == 0.0) {
+                                sorted_idx = indices;
+                                radix_done = true;
+                            }
+                            /* Standard dual-array radix sort */
+                            if (!radix_done) {
+                                td_t *ktmp_hdr, *itmp_hdr;
+                                uint64_t* ktmp = (uint64_t*)scratch_alloc(&ktmp_hdr,
+                                                    (size_t)nrows * sizeof(uint64_t));
+                                int64_t*  itmp = (int64_t*)scratch_alloc(&itmp_hdr,
+                                                    (size_t)nrows * sizeof(int64_t));
+                                if (ktmp && itmp) {
+                                    uint64_t* sk_out = NULL;
+                                    sorted_idx = msd_radix_sort_run(sk_pool, keys, indices,
+                                                                     ktmp, itmp, nrows,
+                                                                     key_nbytes, &sk_out);
+                                    radix_done = (sorted_idx != NULL);
+                                    if (radix_done && sk_out && !TD_IS_SYM(sort_vecs[0]->type)) {
+                                        sorted_keys = sk_out;
+                                        sort_key_type = sort_vecs[0]->type;
+                                        sort_key_desc = desc;
+                                        td_op_ext_t* key_ext = find_ext(g, ext->sort.columns[0]->id);
+                                        if (key_ext && key_ext->base.opcode == OP_SCAN)
+                                            sort_key_sym = key_ext->sym;
+                                        if (sk_out == keys)
+                                            sorted_keys_hdr = keys_hdr;
+                                        else
+                                            sorted_keys_hdr = ktmp_hdr;
+                                    }
+                                }
+                                if (!sorted_keys_hdr || sorted_keys_hdr != ktmp_hdr)
+                                    scratch_free(ktmp_hdr);
+                                if (sorted_idx != itmp) scratch_free(itmp_hdr);
+                                else radix_itmp_hdr = itmp_hdr;
                             }
                         }
-                        if (!sorted_keys_hdr || sorted_keys_hdr != ktmp_hdr)
-                            scratch_free(ktmp_hdr);
-                        if (sorted_idx != itmp) scratch_free(itmp_hdr);
-                        else radix_itmp_hdr = itmp_hdr;
                     }
                 }
                 if (!sorted_keys_hdr || sorted_keys_hdr != keys_hdr)
@@ -4262,9 +4554,8 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                                 /* Already sorted */
                                 sorted_idx = indices;
                                 radix_done = true;
-                            } else if (unsorted_frac < NEARLY_SORTED_FRAC
-                                       || nrows <= RADIX_SORT_THRESHOLD) {
-                                /* Nearly sorted or small — introsort */
+                            } else if (nrows <= RADIX_SORT_THRESHOLD) {
+                                /* Small arrays — introsort */
                                 key_introsort(keys, indices, nrows);
                                 sorted_idx = indices;
                                 radix_done = true;

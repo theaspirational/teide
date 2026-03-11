@@ -80,10 +80,16 @@ static void bench_filter(int64_t n) {
     td_sys_free(v_data);
 }
 
-static void bench_sort(int64_t n) {
-    int64_t* v_data = td_sys_alloc((size_t)n * sizeof(int64_t));
-    for (int64_t i = 0; i < n; i++) v_data[i] = n - i;
+/* Simple xorshift64 PRNG for reproducible random data */
+static uint64_t bench_rng_state = 0x123456789ABCDEF0ULL;
+static int64_t bench_rand(void) {
+    bench_rng_state ^= bench_rng_state << 13;
+    bench_rng_state ^= bench_rng_state >> 7;
+    bench_rng_state ^= bench_rng_state << 17;
+    return (int64_t)(bench_rng_state & 0x7FFFFFFFFFFFFFFFULL);
+}
 
+static void bench_sort_pattern(const char* name, int64_t* v_data, int64_t n) {
     td_t* v = td_vec_from_raw(TD_I64, v_data, n);
     int64_t n_v = td_sym_intern("v", 1);
     td_t* tbl = td_table_new(1);
@@ -102,11 +108,39 @@ static void bench_sort(int64_t n) {
     td_t* result = td_execute(g, s);
     double elapsed = now_ns() - t0;
 
-    report("sort", n, elapsed);
+    report(name, n, elapsed);
 
     if (result && !TD_IS_ERR(result)) td_release(result);
     td_graph_free(g);
     td_release(tbl);
+}
+
+static void bench_sort(int64_t n) {
+    int64_t* v_data = td_sys_alloc((size_t)n * sizeof(int64_t));
+
+    /* Pattern 1: reverse-ordered */
+    for (int64_t i = 0; i < n; i++) v_data[i] = n - i;
+    bench_sort_pattern("sort_reverse", v_data, n);
+
+    /* Pattern 2: random */
+    bench_rng_state = 0x123456789ABCDEF0ULL;
+    for (int64_t i = 0; i < n; i++) v_data[i] = bench_rand() % (n * 10);
+    bench_sort_pattern("sort_random", v_data, n);
+
+    /* Pattern 3: already sorted */
+    for (int64_t i = 0; i < n; i++) v_data[i] = i;
+    bench_sort_pattern("sort_sorted", v_data, n);
+
+    /* Pattern 4: nearly sorted (1% random swaps) */
+    for (int64_t i = 0; i < n; i++) v_data[i] = i;
+    bench_rng_state = 0xDEADBEEFCAFEBABEULL;
+    for (int64_t i = 0; i < n / 100; i++) {
+        int64_t a = bench_rand() % n;
+        int64_t b = bench_rand() % n;
+        int64_t tmp = v_data[a]; v_data[a] = v_data[b]; v_data[b] = tmp;
+    }
+    bench_sort_pattern("sort_nearly", v_data, n);
+
     td_sys_free(v_data);
 }
 
