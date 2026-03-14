@@ -12568,6 +12568,270 @@ static td_t* exec_pagerank(td_graph_t* g, td_op_t* op) {
     return result;
 }
 
+/* --------------------------------------------------------------------------
+ * exec_connected_comp: connected components via label propagation.
+ * Treats graph as undirected (uses both forward and reverse CSR).
+ * O(diameter * |E|) time.
+ * -------------------------------------------------------------------------- */
+static td_t* exec_connected_comp(td_graph_t* g, td_op_t* op) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+
+    td_rel_t* rel = (td_rel_t*)ext->graph.rel;
+    if (!rel) return TD_ERR_PTR(TD_ERR_SCHEMA);
+
+    int64_t n = rel->fwd.n_nodes;
+    if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
+
+    td_t* label_hdr = NULL;
+    int64_t* label = (int64_t*)scratch_alloc(&label_hdr, (size_t)n * sizeof(int64_t));
+    if (!label) return TD_ERR_PTR(TD_ERR_OOM);
+
+    /* Initialize: each node is its own component */
+    for (int64_t i = 0; i < n; i++) label[i] = i;
+
+    int64_t* fwd_off = (int64_t*)td_data(rel->fwd.offsets);
+    int64_t* fwd_tgt = (int64_t*)td_data(rel->fwd.targets);
+    int64_t* rev_off = (int64_t*)td_data(rel->rev.offsets);
+    int64_t* rev_tgt = (int64_t*)td_data(rel->rev.targets);
+
+    /* Iterate until convergence */
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (int64_t v = 0; v < n; v++) {
+            int64_t min_label = label[v];
+            /* Forward neighbors */
+            for (int64_t j = fwd_off[v]; j < fwd_off[v + 1]; j++) {
+                int64_t u = fwd_tgt[j];
+                if (label[u] < min_label) min_label = label[u];
+            }
+            /* Reverse neighbors */
+            for (int64_t j = rev_off[v]; j < rev_off[v + 1]; j++) {
+                int64_t u = rev_tgt[j];
+                if (label[u] < min_label) min_label = label[u];
+            }
+            if (min_label < label[v]) {
+                label[v] = min_label;
+                changed = true;
+            }
+        }
+    }
+
+    /* Build output table */
+    td_t* node_vec = td_vec_new(TD_I64, n);
+    td_t* comp_vec = td_vec_new(TD_I64, n);
+    if (!node_vec || TD_IS_ERR(node_vec) || !comp_vec || TD_IS_ERR(comp_vec)) {
+        scratch_free(label_hdr);
+        if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
+        if (comp_vec && !TD_IS_ERR(comp_vec)) td_release(comp_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    int64_t* ndata = (int64_t*)td_data(node_vec);
+    int64_t* cdata = (int64_t*)td_data(comp_vec);
+    for (int64_t i = 0; i < n; i++) {
+        ndata[i] = i;
+        cdata[i] = label[i];
+    }
+    node_vec->len = n;
+    comp_vec->len = n;
+
+    scratch_free(label_hdr);
+
+    td_t* result = td_table_new(2);
+    if (!result || TD_IS_ERR(result)) {
+        td_release(node_vec);
+        td_release(comp_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_release(node_vec);
+    result = td_table_add_col(result, td_sym_intern("_component", 10), comp_vec);
+    td_release(comp_vec);
+
+    return result;
+}
+
+/* --------------------------------------------------------------------------
+ * exec_dijkstra: weighted shortest path via Dijkstra's algorithm.
+ * Uses a binary min-heap. Reads edge weights from CSR property table.
+ * Returns table with _node (I64), _dist (F64), _depth (I64).
+ * -------------------------------------------------------------------------- */
+
+/* Min-heap entry for Dijkstra */
+typedef struct {
+    double   dist;
+    int64_t  node;
+} dijk_entry_t;
+
+static void dijk_heap_push(dijk_entry_t* heap, int64_t* size,
+                            double dist, int64_t node) {
+    int64_t i = (*size)++;
+    heap[i].dist = dist;
+    heap[i].node = node;
+    /* Sift up */
+    while (i > 0) {
+        int64_t parent = (i - 1) / 2;
+        if (heap[parent].dist <= heap[i].dist) break;
+        dijk_entry_t tmp = heap[parent];
+        heap[parent] = heap[i];
+        heap[i] = tmp;
+        i = parent;
+    }
+}
+
+static dijk_entry_t dijk_heap_pop(dijk_entry_t* heap, int64_t* size) {
+    dijk_entry_t top = heap[0];
+    (*size)--;
+    if (*size > 0) {
+        heap[0] = heap[*size];
+        /* Sift down */
+        int64_t i = 0;
+        while (1) {
+            int64_t left  = 2 * i + 1;
+            int64_t right = 2 * i + 2;
+            int64_t smallest = i;
+            if (left  < *size && heap[left].dist  < heap[smallest].dist) smallest = left;
+            if (right < *size && heap[right].dist < heap[smallest].dist) smallest = right;
+            if (smallest == i) break;
+            dijk_entry_t tmp = heap[i];
+            heap[i] = heap[smallest];
+            heap[smallest] = tmp;
+            i = smallest;
+        }
+    }
+    return top;
+}
+
+static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
+                             td_t* src_val, td_t* dst_val) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+
+    td_rel_t* rel = (td_rel_t*)ext->graph.rel;
+    if (!rel) return TD_ERR_PTR(TD_ERR_SCHEMA);
+    if (!rel->fwd.props) return TD_ERR_PTR(TD_ERR_SCHEMA); /* need edge properties */
+
+    int64_t n = rel->fwd.n_nodes;
+    int64_t src_id = *(int64_t*)td_data(src_val);
+    int64_t dst_id = dst_val ? *(int64_t*)td_data(dst_val) : -1;
+
+    if (src_id < 0 || src_id >= n) return TD_ERR_PTR(TD_ERR_RANGE);
+
+    /* Find weight column in edge properties */
+    int64_t weight_sym = ext->graph.weight_col_sym;
+    td_t* props = rel->fwd.props;
+    td_t* weight_vec = td_table_get_col(props, weight_sym);
+    if (!weight_vec || TD_IS_ERR(weight_vec)) return TD_ERR_PTR(TD_ERR_SCHEMA);
+    double* weights = (double*)td_data(weight_vec);
+
+    /* Allocate working arrays */
+    td_t* dist_hdr = NULL;
+    td_t* visited_hdr = NULL;
+    td_t* depth_hdr = NULL;
+    td_t* heap_hdr = NULL;
+
+    double*  dist    = (double*)scratch_alloc(&dist_hdr, (size_t)n * sizeof(double));
+    bool*    visited = (bool*)scratch_calloc(&visited_hdr, (size_t)n * sizeof(bool));
+    int64_t* depth   = (int64_t*)scratch_calloc(&depth_hdr, (size_t)n * sizeof(int64_t));
+    dijk_entry_t* heap = (dijk_entry_t*)scratch_alloc(&heap_hdr,
+                              (size_t)n * 2 * sizeof(dijk_entry_t));
+    if (!dist || !visited || !depth || !heap) {
+        scratch_free(dist_hdr); scratch_free(visited_hdr);
+        scratch_free(depth_hdr); scratch_free(heap_hdr);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    for (int64_t i = 0; i < n; i++) {
+        dist[i] = 1e308;  /* infinity */
+    }
+    dist[src_id] = 0.0;
+
+    int64_t heap_size = 0;
+    dijk_heap_push(heap, &heap_size, 0.0, src_id);
+
+    int64_t* fwd_off = (int64_t*)td_data(rel->fwd.offsets);
+    int64_t* fwd_tgt = (int64_t*)td_data(rel->fwd.targets);
+    int64_t* fwd_row = (int64_t*)td_data(rel->fwd.rowmap);
+
+    while (heap_size > 0) {
+        dijk_entry_t top = dijk_heap_pop(heap, &heap_size);
+        int64_t u = top.node;
+        if (visited[u]) continue;
+        visited[u] = true;
+
+        if (u == dst_id) break;  /* early exit if destination reached */
+
+        for (int64_t j = fwd_off[u]; j < fwd_off[u + 1]; j++) {
+            int64_t v = fwd_tgt[j];
+            int64_t edge_row = fwd_row[j];
+            double w = weights[edge_row];
+            double new_dist = dist[u] + w;
+            if (new_dist < dist[v]) {
+                dist[v] = new_dist;
+                depth[v] = depth[u] + 1;
+                dijk_heap_push(heap, &heap_size, new_dist, v);
+            }
+        }
+    }
+
+    /* Collect reachable nodes */
+    int64_t count = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (dist[i] < 1e308) count++;
+    }
+
+    td_t* node_vec  = td_vec_new(TD_I64, count);
+    td_t* dist_vec  = td_vec_new(TD_F64, count);
+    td_t* depth_vec = td_vec_new(TD_I64, count);
+    if (!node_vec || TD_IS_ERR(node_vec) ||
+        !dist_vec || TD_IS_ERR(dist_vec) ||
+        !depth_vec || TD_IS_ERR(depth_vec)) {
+        scratch_free(dist_hdr); scratch_free(visited_hdr);
+        scratch_free(depth_hdr); scratch_free(heap_hdr);
+        if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
+        if (dist_vec && !TD_IS_ERR(dist_vec)) td_release(dist_vec);
+        if (depth_vec && !TD_IS_ERR(depth_vec)) td_release(depth_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    int64_t* ndata = (int64_t*)td_data(node_vec);
+    double*  ddata = (double*)td_data(dist_vec);
+    int64_t* hdata = (int64_t*)td_data(depth_vec);
+    int64_t idx = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (dist[i] < 1e308) {
+            ndata[idx] = i;
+            ddata[idx] = dist[i];
+            hdata[idx] = depth[i];
+            idx++;
+        }
+    }
+    node_vec->len = count;
+    dist_vec->len = count;
+    depth_vec->len = count;
+
+    scratch_free(dist_hdr); scratch_free(visited_hdr);
+    scratch_free(depth_hdr); scratch_free(heap_hdr);
+
+    td_t* result = td_table_new(3);
+    if (!result || TD_IS_ERR(result)) {
+        td_release(node_vec);
+        td_release(dist_vec);
+        td_release(depth_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_release(node_vec);
+    result = td_table_add_col(result, td_sym_intern("_dist", 5), dist_vec);
+    td_release(dist_vec);
+    result = td_table_add_col(result, td_sym_intern("_depth", 6), depth_vec);
+    td_release(depth_vec);
+
+    return result;
+}
+
 /* exec_wco_join: Worst-Case Optimal Join via general Leapfrog Triejoin */
 static td_t* exec_wco_join(td_graph_t* g, td_op_t* op) {
     td_op_ext_t* ext = find_ext(g, op->id);
@@ -13382,6 +13646,21 @@ static td_t* exec_node(td_graph_t* g, td_op_t* op) {
 
         case OP_PAGERANK: {
             return exec_pagerank(g, op);
+        }
+
+        case OP_CONNECTED_COMP: {
+            return exec_connected_comp(g, op);
+        }
+
+        case OP_DIJKSTRA: {
+            td_t* src = exec_node(g, op->inputs[0]);
+            if (!src || TD_IS_ERR(src)) return src;
+            td_t* dst = op->inputs[1] ? exec_node(g, op->inputs[1]) : NULL;
+            if (dst && TD_IS_ERR(dst)) { td_release(src); return dst; }
+            td_t* result = exec_dijkstra(g, op, src, dst);
+            td_release(src);
+            if (dst) td_release(dst);
+            return result;
         }
 
         default:

@@ -1163,6 +1163,49 @@ td_op_t* td_pagerank(td_graph_t* g, td_rel_t* rel,
     return &g->nodes[ext->base.id];
 }
 
+td_op_t* td_connected_comp(td_graph_t* g, td_rel_t* rel) {
+    if (!g || !rel) return NULL;
+
+    td_op_ext_t* ext = graph_alloc_ext_node(g);
+    if (!ext) return NULL;
+
+    ext->base.opcode   = OP_CONNECTED_COMP;
+    ext->base.arity    = 0;
+    ext->base.out_type = TD_TABLE;
+    ext->base.est_rows = (uint32_t)rel->fwd.n_nodes;
+    ext->graph.rel     = rel;
+    ext->graph.direction = 2;  /* both directions for undirected */
+
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}
+
+td_op_t* td_dijkstra(td_graph_t* g, td_op_t* src, td_op_t* dst,
+                      td_rel_t* rel, const char* weight_col,
+                      uint8_t max_depth) {
+    if (!g || !src || !rel || !weight_col) return NULL;
+
+    td_op_ext_t* ext = graph_alloc_ext_node(g);
+    if (!ext) return NULL;
+
+    src = &g->nodes[src->id];
+    if (dst) dst = &g->nodes[dst->id];
+
+    ext->base.opcode    = OP_DIJKSTRA;
+    ext->base.arity     = dst ? 2 : 1;
+    ext->base.inputs[0] = src;
+    ext->base.inputs[1] = dst;
+    ext->base.out_type  = TD_TABLE;
+    ext->base.est_rows  = (uint32_t)rel->fwd.n_nodes;
+    ext->graph.rel       = rel;
+    ext->graph.direction = 0;
+    ext->graph.max_depth = max_depth;
+    ext->graph.weight_col_sym = td_sym_intern(weight_col, (int64_t)strlen(weight_col));
+
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}
+
 td_op_t* td_wco_join(td_graph_t* g,
                       td_rel_t** rels, uint8_t n_rels,
                       uint8_t n_vars) {
