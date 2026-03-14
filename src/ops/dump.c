@@ -102,6 +102,10 @@ static const char* opcode_name(uint16_t op) {
         case OP_VAR_EXPAND:    return "VAR_EXPAND";
         case OP_SHORTEST_PATH: return "SHORTEST_PATH";
         case OP_WCO_JOIN:      return "WCO_JOIN";
+        case OP_PAGERANK:      return "PAGERANK";
+        case OP_CONNECTED_COMP: return "CONNECTED_COMP";
+        case OP_DIJKSTRA:      return "DIJKSTRA";
+        case OP_LOUVAIN:       return "LOUVAIN";
         default:               return "UNKNOWN";
     }
 }

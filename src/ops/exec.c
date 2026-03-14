@@ -12464,6 +12464,110 @@ bfs_done:
     return result;
 }
 
+/* --------------------------------------------------------------------------
+ * exec_pagerank: iterative PageRank over CSR adjacency.
+ *
+ * rank[v] = (1 - d)/N + d * SUM(rank[u] / out_degree[u]) for u in in_neighbors(v)
+ *
+ * Uses reverse CSR for in-neighbors, forward CSR for out-degree.
+ * -------------------------------------------------------------------------- */
+static td_t* exec_pagerank(td_graph_t* g, td_op_t* op) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+
+    td_rel_t* rel = (td_rel_t*)ext->graph.rel;
+    if (!rel) return TD_ERR_PTR(TD_ERR_SCHEMA);
+
+    int64_t n       = rel->fwd.n_nodes;
+    uint16_t iters  = ext->graph.max_iter;
+    double damping  = ext->graph.damping;
+
+    if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
+
+    /* Allocate rank arrays: current and next */
+    td_t* rank_hdr = NULL;
+    td_t* rank_new_hdr = NULL;
+    double* rank     = (double*)scratch_calloc(&rank_hdr, (size_t)n * sizeof(double));
+    double* rank_new = (double*)scratch_calloc(&rank_new_hdr, (size_t)n * sizeof(double));
+    if (!rank || !rank_new) {
+        scratch_free(rank_hdr);
+        scratch_free(rank_new_hdr);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    double init = 1.0 / (double)n;
+    for (int64_t i = 0; i < n; i++) rank[i] = init;
+
+    /* Get raw CSR arrays for direct access */
+    int64_t* fwd_off = (int64_t*)td_data(rel->fwd.offsets);
+    int64_t* rev_off = (int64_t*)td_data(rel->rev.offsets);
+    int64_t* rev_tgt = (int64_t*)td_data(rel->rev.targets);
+
+    double base = (1.0 - damping) / (double)n;
+
+    for (uint16_t iter = 0; iter < iters; iter++) {
+        for (int64_t v = 0; v < n; v++) {
+            double sum = 0.0;
+            /* Iterate over in-neighbors of v using reverse CSR */
+            int64_t rev_start = rev_off[v];
+            int64_t rev_end   = rev_off[v + 1];
+            for (int64_t j = rev_start; j < rev_end; j++) {
+                int64_t u = rev_tgt[j];
+                /* out_degree of u from forward CSR */
+                int64_t out_deg = fwd_off[u + 1] - fwd_off[u];
+                if (out_deg > 0) {
+                    sum += rank[u] / (double)out_deg;
+                }
+            }
+            rank_new[v] = base + damping * sum;
+        }
+        /* Swap */
+        double* tmp = rank;
+        rank = rank_new;
+        rank_new = tmp;
+        td_t* tmp_hdr = rank_hdr;
+        rank_hdr = rank_new_hdr;
+        rank_new_hdr = tmp_hdr;
+    }
+
+    /* Build output table: _node (I64), _rank (F64) */
+    td_t* node_vec = td_vec_new(TD_I64, n);
+    td_t* rank_vec = td_vec_new(TD_F64, n);
+    if (!node_vec || TD_IS_ERR(node_vec) || !rank_vec || TD_IS_ERR(rank_vec)) {
+        scratch_free(rank_hdr);
+        scratch_free(rank_new_hdr);
+        if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
+        if (rank_vec && !TD_IS_ERR(rank_vec)) td_release(rank_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    int64_t* ndata = (int64_t*)td_data(node_vec);
+    double*  rdata = (double*)td_data(rank_vec);
+    for (int64_t i = 0; i < n; i++) {
+        ndata[i] = i;
+        rdata[i] = rank[i];
+    }
+    node_vec->len = n;
+    rank_vec->len = n;
+
+    scratch_free(rank_hdr);
+    scratch_free(rank_new_hdr);
+
+    /* Package as table with named columns */
+    td_t* result = td_table_new(2);
+    if (!result || TD_IS_ERR(result)) {
+        td_release(node_vec);
+        td_release(rank_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_release(node_vec);
+    result = td_table_add_col(result, td_sym_intern("_rank", 5), rank_vec);
+    td_release(rank_vec);
+
+    return result;
+}
+
 /* exec_wco_join: Worst-Case Optimal Join via general Leapfrog Triejoin */
 static td_t* exec_wco_join(td_graph_t* g, td_op_t* op) {
     td_op_ext_t* ext = find_ext(g, op->id);
@@ -13274,6 +13378,10 @@ static td_t* exec_node(td_graph_t* g, td_op_t* op) {
 
         case OP_WCO_JOIN: {
             return exec_wco_join(g, op);
+        }
+
+        case OP_PAGERANK: {
+            return exec_pagerank(g, op);
         }
 
         default:

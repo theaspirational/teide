@@ -403,6 +403,10 @@ static inline uint8_t td_sym_dict_width(int64_t dict_size) {
 #define OP_VAR_EXPAND    81   /* variable-length BFS/DFS            */
 #define OP_SHORTEST_PATH 82   /* BFS shortest path                  */
 #define OP_WCO_JOIN      83   /* worst-case optimal join (LFTJ)     */
+#define OP_PAGERANK        84   /* iterative PageRank                 */
+#define OP_CONNECTED_COMP  85   /* connected components (label prop)  */
+#define OP_DIJKSTRA        86   /* weighted shortest path (Dijkstra)  */
+#define OP_LOUVAIN         87   /* community detection (Louvain)      */
 
 /* Opcodes — Misc */
 #define OP_ALIAS        70
@@ -498,7 +502,7 @@ typedef struct td_op_ext {
             int64_t    frame_start_n;
             int64_t    frame_end_n;
         } window;
-        struct {  /* OP_EXPAND / OP_VAR_EXPAND / OP_SHORTEST_PATH */
+        struct {  /* OP_EXPAND / OP_VAR_EXPAND / OP_SHORTEST_PATH / graph algos */
             void*     rel;            /* td_rel_t* (opaque to public header) */
             void*     sip_sel;        /* td_t* TD_SEL bitmap for SIP source-side skip */
             uint8_t   direction;      /* 0=fwd, 1=rev, 2=both */
@@ -506,6 +510,9 @@ typedef struct td_op_ext {
             uint8_t   max_depth;
             uint8_t   path_tracking;
             uint8_t   factorized;     /* 1 = emit factorized output (fvec) */
+            uint16_t  max_iter;       /* PageRank/Louvain iterations  */
+            double    damping;        /* PageRank damping factor      */
+            int64_t   weight_col_sym; /* Dijkstra weight column name  */
         } graph;
         struct {  /* OP_WCO_JOIN */
             void**    rels;           /* td_rel_t** array */
@@ -890,6 +897,16 @@ td_op_t* td_shortest_path(td_graph_t* g, td_op_t* src, td_op_t* dst,
 td_op_t* td_wco_join(td_graph_t* g,
                       td_rel_t** rels, uint8_t n_rels,
                       uint8_t n_vars);
+
+/* Graph algorithms */
+td_op_t* td_pagerank(td_graph_t* g, td_rel_t* rel,
+                      uint16_t max_iter, double damping);
+td_op_t* td_connected_comp(td_graph_t* g, td_rel_t* rel);
+td_op_t* td_dijkstra(td_graph_t* g, td_op_t* src, td_op_t* dst,
+                      td_rel_t* rel, const char* weight_col,
+                      uint8_t max_depth);
+td_op_t* td_louvain(td_graph_t* g, td_rel_t* rel,
+                     uint16_t max_iter);
 
 /* CSR / Relationship API */
 td_rel_t* td_rel_build(td_t* from_table, const char* fk_col,

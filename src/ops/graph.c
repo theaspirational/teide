@@ -1139,6 +1139,30 @@ td_op_t* td_shortest_path(td_graph_t* g, td_op_t* src, td_op_t* dst,
     return &g->nodes[ext->base.id];
 }
 
+/* --------------------------------------------------------------------------
+ * Graph algorithm builders
+ * -------------------------------------------------------------------------- */
+
+td_op_t* td_pagerank(td_graph_t* g, td_rel_t* rel,
+                      uint16_t max_iter, double damping) {
+    if (!g || !rel) return NULL;
+
+    td_op_ext_t* ext = graph_alloc_ext_node(g);
+    if (!ext) return NULL;
+
+    ext->base.opcode   = OP_PAGERANK;
+    ext->base.arity    = 0;
+    ext->base.out_type = TD_TABLE;
+    ext->base.est_rows = (uint32_t)rel->fwd.n_nodes;
+    ext->graph.rel      = rel;
+    ext->graph.max_iter  = max_iter;
+    ext->graph.damping   = damping;
+    ext->graph.direction = 0;
+
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}
+
 td_op_t* td_wco_join(td_graph_t* g,
                       td_rel_t** rels, uint8_t n_rels,
                       uint8_t n_vars) {
