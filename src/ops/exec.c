@@ -12714,6 +12714,7 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
     if (!rel->fwd.props) return TD_ERR_PTR(TD_ERR_SCHEMA); /* need edge properties */
 
     int64_t n = rel->fwd.n_nodes;
+    int64_t m = rel->fwd.n_edges;
     int64_t src_id = *(int64_t*)td_data(src_val);
     int64_t dst_id = dst_val ? *(int64_t*)td_data(dst_val) : -1;
 
@@ -12726,7 +12727,11 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
     if (!weight_vec || TD_IS_ERR(weight_vec)) return TD_ERR_PTR(TD_ERR_SCHEMA);
     double* weights = (double*)td_data(weight_vec);
 
-    /* Allocate working arrays */
+    /* Allocate working arrays.
+     * Heap capacity = max(n, m) + 1: each edge relaxation can push one entry,
+     * and with lazy deletion (visited check on pop) the heap can grow up to m. */
+    int64_t heap_cap = (m > n ? m : n) + 1;
+
     td_t* dist_hdr = NULL;
     td_t* visited_hdr = NULL;
     td_t* depth_hdr = NULL;
@@ -12736,7 +12741,7 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
     bool*    visited = (bool*)scratch_calloc(&visited_hdr, (size_t)n * sizeof(bool));
     int64_t* depth   = (int64_t*)scratch_calloc(&depth_hdr, (size_t)n * sizeof(int64_t));
     dijk_entry_t* heap = (dijk_entry_t*)scratch_alloc(&heap_hdr,
-                              (size_t)n * 2 * sizeof(dijk_entry_t));
+                              (size_t)heap_cap * sizeof(dijk_entry_t));
     if (!dist || !visited || !depth || !heap) {
         scratch_free(dist_hdr); scratch_free(visited_hdr);
         scratch_free(depth_hdr); scratch_free(heap_hdr);
@@ -12923,6 +12928,186 @@ static td_t* exec_wco_join(td_graph_t* g, td_op_t* op) {
     }
 
     scratch_free(col_data_block);
+    return result;
+}
+
+/* --------------------------------------------------------------------------
+ * exec_louvain: community detection via Louvain modularity optimization.
+ * Phase 1 only (no graph contraction).
+ * Maximizes modularity Q = (1/2m) * SUM[(A_ij - k_i*k_j/2m) * delta(c_i, c_j)]
+ * Treats graph as undirected. Uses forward+reverse CSR.
+ * -------------------------------------------------------------------------- */
+static td_t* exec_louvain(td_graph_t* g, td_op_t* op) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+
+    td_rel_t* rel = (td_rel_t*)ext->graph.rel;
+    if (!rel) return TD_ERR_PTR(TD_ERR_SCHEMA);
+
+    int64_t n = rel->fwd.n_nodes;
+    int64_t m = rel->fwd.n_edges;
+    uint16_t max_iter = ext->graph.max_iter;
+
+    if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
+
+    td_t* comm_hdr = NULL;
+    td_t* degree_hdr = NULL;
+    td_t* comm_tot_hdr = NULL;
+    int64_t* community = (int64_t*)scratch_alloc(&comm_hdr, (size_t)n * sizeof(int64_t));
+    int64_t* degree    = (int64_t*)scratch_alloc(&degree_hdr, (size_t)n * sizeof(int64_t));
+    int64_t* comm_tot  = (int64_t*)scratch_alloc(&comm_tot_hdr, (size_t)n * sizeof(int64_t));
+    if (!community || !degree || !comm_tot) {
+        scratch_free(comm_hdr);
+        scratch_free(degree_hdr);
+        scratch_free(comm_tot_hdr);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    int64_t* fwd_off = (int64_t*)td_data(rel->fwd.offsets);
+    int64_t* fwd_tgt = (int64_t*)td_data(rel->fwd.targets);
+    int64_t* rev_off = (int64_t*)td_data(rel->rev.offsets);
+    int64_t* rev_tgt = (int64_t*)td_data(rel->rev.targets);
+
+    /* Initialize: each node in its own community */
+    for (int64_t i = 0; i < n; i++) {
+        community[i] = i;
+        degree[i] = (fwd_off[i+1] - fwd_off[i]) + (rev_off[i+1] - rev_off[i]);
+        comm_tot[i] = degree[i];
+    }
+
+    double two_m = (double)(2 * m);
+    if (two_m == 0) two_m = 1;
+
+    /* Scratch space for per-community edge counts (reused across iterations).
+     * k_i_in[c] = number of edges from node v to community c. */
+    td_t* ki_hdr = NULL;
+    int64_t* k_i_in = (int64_t*)scratch_calloc(&ki_hdr, (size_t)n * sizeof(int64_t));
+    if (!k_i_in) {
+        scratch_free(comm_hdr);
+        scratch_free(degree_hdr);
+        scratch_free(comm_tot_hdr);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    /* Track which communities were touched so we can reset k_i_in efficiently */
+    td_t* touched_hdr = NULL;
+    int64_t* touched = (int64_t*)scratch_alloc(&touched_hdr, (size_t)n * sizeof(int64_t));
+    if (!touched) {
+        scratch_free(comm_hdr);
+        scratch_free(degree_hdr);
+        scratch_free(comm_tot_hdr);
+        scratch_free(ki_hdr);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    for (uint16_t iter = 0; iter < max_iter; iter++) {
+        bool moved = false;
+        for (int64_t v = 0; v < n; v++) {
+            int64_t old_comm = community[v];
+            int64_t n_touched = 0;
+
+            /* Aggregate edges per neighbor community (forward + reverse) */
+            for (int64_t j = fwd_off[v]; j < fwd_off[v + 1]; j++) {
+                int64_t c = community[fwd_tgt[j]];
+                if (c == old_comm) continue;
+                if (k_i_in[c] == 0) touched[n_touched++] = c;
+                k_i_in[c]++;
+            }
+            for (int64_t j = rev_off[v]; j < rev_off[v + 1]; j++) {
+                int64_t c = community[rev_tgt[j]];
+                if (c == old_comm) continue;
+                if (k_i_in[c] == 0) touched[n_touched++] = c;
+                k_i_in[c]++;
+            }
+
+            /* Evaluate modularity gain for each candidate community.
+             * delta_Q = k_i_in[c] / two_m - (sigma_tot[c] * k_v) / (two_m * two_m) */
+            int64_t best_comm = old_comm;
+            double best_gain = 0.0;
+            double k_v = (double)degree[v];
+
+            for (int64_t t = 0; t < n_touched; t++) {
+                int64_t c = touched[t];
+                double sigma_tot = (double)comm_tot[c];
+                double gain = (double)k_i_in[c] / two_m
+                            - (sigma_tot * k_v) / (two_m * two_m);
+                if (gain > best_gain) {
+                    best_gain = gain;
+                    best_comm = c;
+                }
+            }
+
+            /* Reset k_i_in for touched communities */
+            for (int64_t t = 0; t < n_touched; t++) {
+                k_i_in[touched[t]] = 0;
+            }
+
+            if (best_comm != old_comm) {
+                comm_tot[old_comm] -= degree[v];
+                comm_tot[best_comm] += degree[v];
+                community[v] = best_comm;
+                moved = true;
+            }
+        }
+        if (!moved) break;
+    }
+    scratch_free(ki_hdr);
+    scratch_free(touched_hdr);
+
+    /* Normalize community IDs to 0..k-1 */
+    td_t* remap_hdr = NULL;
+    int64_t* remap = (int64_t*)scratch_alloc(&remap_hdr, (size_t)n * sizeof(int64_t));
+    if (!remap) {
+        scratch_free(comm_hdr);
+        scratch_free(degree_hdr);
+        scratch_free(comm_tot_hdr);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    for (int64_t i = 0; i < n; i++) remap[i] = -1;
+    int64_t next_id = 0;
+    for (int64_t i = 0; i < n; i++) {
+        int64_t c = community[i];
+        if (remap[c] < 0) remap[c] = next_id++;
+        community[i] = remap[c];
+    }
+
+    /* Build output table */
+    td_t* node_vec = td_vec_new(TD_I64, n);
+    td_t* comm_vec = td_vec_new(TD_I64, n);
+    if (!node_vec || TD_IS_ERR(node_vec) || !comm_vec || TD_IS_ERR(comm_vec)) {
+        scratch_free(comm_hdr);
+        scratch_free(degree_hdr);
+        scratch_free(comm_tot_hdr);
+        scratch_free(remap_hdr);
+        if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
+        if (comm_vec && !TD_IS_ERR(comm_vec)) td_release(comm_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    int64_t* ndata = (int64_t*)td_data(node_vec);
+    int64_t* cdata = (int64_t*)td_data(comm_vec);
+    for (int64_t i = 0; i < n; i++) {
+        ndata[i] = i;
+        cdata[i] = community[i];
+    }
+    node_vec->len = n;
+    comm_vec->len = n;
+
+    scratch_free(comm_hdr);
+    scratch_free(degree_hdr);
+    scratch_free(comm_tot_hdr);
+    scratch_free(remap_hdr);
+
+    td_t* result = td_table_new(2);
+    if (!result || TD_IS_ERR(result)) {
+        td_release(node_vec);
+        td_release(comm_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_release(node_vec);
+    result = td_table_add_col(result, td_sym_intern("_community", 10), comm_vec);
+    td_release(comm_vec);
+
     return result;
 }
 
@@ -13661,6 +13846,10 @@ static td_t* exec_node(td_graph_t* g, td_op_t* op) {
             td_release(src);
             if (dst) td_release(dst);
             return result;
+        }
+
+        case OP_LOUVAIN: {
+            return exec_louvain(g, op);
         }
 
         default:
