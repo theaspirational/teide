@@ -111,6 +111,7 @@ extern "C" {
 #define TD_I32        5
 #define TD_I64        6
 #define TD_F64        7
+#define TD_F32        8    /* 32-bit float vector (also used for embeddings) */
 #define TD_DATE       9
 #define TD_TIME      10
 #define TD_TIMESTAMP 11
@@ -918,6 +919,7 @@ td_rel_t* td_rel_from_edges(td_t* edge_table,
 td_err_t  td_rel_save(td_rel_t* rel, const char* dir);
 td_rel_t* td_rel_load(const char* dir);
 td_rel_t* td_rel_mmap(const char* dir);
+void      td_rel_set_props(td_rel_t* rel, td_t* props);
 void      td_rel_free(td_rel_t* rel);
 
 /* ===== Optimizer API ===== */
