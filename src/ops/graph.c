@@ -1246,3 +1246,71 @@ td_op_t* td_wco_join(td_graph_t* g,
     g->nodes[ext->base.id] = ext->base;
     return &g->nodes[ext->base.id];
 }
+
+/* --------------------------------------------------------------------------
+ * Vector similarity builders
+ * -------------------------------------------------------------------------- */
+
+td_op_t* td_cosine_sim(td_graph_t* g, td_op_t* emb_col,
+                        const float* query_vec, int32_t dim) {
+    if (!g || !emb_col || !query_vec || dim <= 0) return NULL;
+
+    td_op_ext_t* ext = graph_alloc_ext_node(g);
+    if (!ext) return NULL;
+
+    emb_col = &g->nodes[emb_col->id];
+
+    ext->base.opcode    = OP_COSINE_SIM;
+    ext->base.arity     = 1;
+    ext->base.inputs[0] = emb_col;
+    ext->base.out_type  = TD_F64;
+    ext->base.est_rows  = emb_col->est_rows;
+    ext->vector.query_vec = (float*)query_vec;
+    ext->vector.dim       = dim;
+
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}
+
+td_op_t* td_euclidean_dist(td_graph_t* g, td_op_t* emb_col,
+                            const float* query_vec, int32_t dim) {
+    if (!g || !emb_col || !query_vec || dim <= 0) return NULL;
+
+    td_op_ext_t* ext = graph_alloc_ext_node(g);
+    if (!ext) return NULL;
+
+    emb_col = &g->nodes[emb_col->id];
+
+    ext->base.opcode    = OP_EUCLIDEAN_DIST;
+    ext->base.arity     = 1;
+    ext->base.inputs[0] = emb_col;
+    ext->base.out_type  = TD_F64;
+    ext->base.est_rows  = emb_col->est_rows;
+    ext->vector.query_vec = (float*)query_vec;
+    ext->vector.dim       = dim;
+
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}
+
+td_op_t* td_knn(td_graph_t* g, td_op_t* emb_col,
+                 const float* query_vec, int32_t dim, int64_t k) {
+    if (!g || !emb_col || !query_vec || dim <= 0 || k <= 0) return NULL;
+
+    td_op_ext_t* ext = graph_alloc_ext_node(g);
+    if (!ext) return NULL;
+
+    emb_col = &g->nodes[emb_col->id];
+
+    ext->base.opcode    = OP_KNN;
+    ext->base.arity     = 1;
+    ext->base.inputs[0] = emb_col;
+    ext->base.out_type  = TD_TABLE;
+    ext->base.est_rows  = (uint32_t)k;
+    ext->vector.query_vec = (float*)query_vec;
+    ext->vector.dim       = dim;
+    ext->vector.k         = k;
+
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}

@@ -12715,8 +12715,8 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
 
     int64_t n = rel->fwd.n_nodes;
     int64_t m = rel->fwd.n_edges;
-    int64_t src_id = *(int64_t*)td_data(src_val);
-    int64_t dst_id = dst_val ? *(int64_t*)td_data(dst_val) : -1;
+    int64_t src_id = src_val->i64;
+    int64_t dst_id = dst_val ? dst_val->i64 : -1;
 
     if (src_id < 0 || src_id >= n) return TD_ERR_PTR(TD_ERR_RANGE);
 
@@ -13107,6 +13107,225 @@ static td_t* exec_louvain(td_graph_t* g, td_op_t* op) {
     td_release(node_vec);
     result = td_table_add_col(result, td_sym_intern("_community", 10), comm_vec);
     td_release(comm_vec);
+
+    return result;
+}
+
+/* --------------------------------------------------------------------------
+ * exec_cosine_sim: cosine similarity between embedding column and query vector.
+ * dot(a,b) / (||a|| * ||b||) per row.
+ * Input: TD_F32 embedding column (flat N*D floats)
+ * Output: TD_F64 vector of similarities (one per row)
+ * -------------------------------------------------------------------------- */
+static td_t* exec_cosine_sim(td_graph_t* g, td_op_t* op, td_t* emb_vec) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+
+    const float* query = ext->vector.query_vec;
+    int32_t dim = ext->vector.dim;
+
+    if (!query || dim <= 0) return TD_ERR_PTR(TD_ERR_SCHEMA);
+    if (emb_vec->type != TD_F32) return TD_ERR_PTR(TD_ERR_TYPE);
+
+    int64_t total = emb_vec->len;
+    int64_t nrows = total / dim;
+    if (nrows * dim != total) return TD_ERR_PTR(TD_ERR_LENGTH);
+
+    const float* data = (const float*)td_data(emb_vec);
+
+    /* Precompute query norm */
+    double q_norm_sq = 0.0;
+    for (int32_t j = 0; j < dim; j++) {
+        q_norm_sq += (double)query[j] * (double)query[j];
+    }
+    double q_norm = sqrt(q_norm_sq);
+
+    /* Compute per-row similarity */
+    td_t* result = td_vec_new(TD_F64, nrows);
+    if (!result || TD_IS_ERR(result)) return TD_ERR_PTR(TD_ERR_OOM);
+    result->len = nrows;
+    double* out = (double*)td_data(result);
+
+    for (int64_t i = 0; i < nrows; i++) {
+        const float* row = data + i * dim;
+        double dot = 0.0;
+        double r_norm_sq = 0.0;
+        for (int32_t j = 0; j < dim; j++) {
+            dot += (double)row[j] * (double)query[j];
+            r_norm_sq += (double)row[j] * (double)row[j];
+        }
+        double r_norm = sqrt(r_norm_sq);
+        double denom = q_norm * r_norm;
+        out[i] = (denom > 0.0) ? dot / denom : 0.0;
+    }
+
+    return result;
+}
+
+/* --------------------------------------------------------------------------
+ * exec_euclidean_dist: euclidean distance between embedding column and query.
+ * sqrt(sum((a_i - b_i)^2)) per row.
+ * -------------------------------------------------------------------------- */
+static td_t* exec_euclidean_dist(td_graph_t* g, td_op_t* op, td_t* emb_vec) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+
+    const float* query = ext->vector.query_vec;
+    int32_t dim = ext->vector.dim;
+
+    if (!query || dim <= 0) return TD_ERR_PTR(TD_ERR_SCHEMA);
+    if (emb_vec->type != TD_F32) return TD_ERR_PTR(TD_ERR_TYPE);
+
+    int64_t total = emb_vec->len;
+    int64_t nrows = total / dim;
+    if (nrows * dim != total) return TD_ERR_PTR(TD_ERR_LENGTH);
+
+    const float* data = (const float*)td_data(emb_vec);
+
+    td_t* result = td_vec_new(TD_F64, nrows);
+    if (!result || TD_IS_ERR(result)) return TD_ERR_PTR(TD_ERR_OOM);
+    result->len = nrows;
+    double* out = (double*)td_data(result);
+
+    for (int64_t i = 0; i < nrows; i++) {
+        const float* row = data + i * dim;
+        double sum_sq = 0.0;
+        for (int32_t j = 0; j < dim; j++) {
+            double d = (double)row[j] - (double)query[j];
+            sum_sq += d * d;
+        }
+        out[i] = sqrt(sum_sq);
+    }
+
+    return result;
+}
+
+/* --------------------------------------------------------------------------
+ * exec_knn: brute-force K nearest neighbors via cosine similarity.
+ * Returns TD_TABLE with _rowid (I64) and _similarity (F64), sorted desc.
+ * -------------------------------------------------------------------------- */
+
+/* Max-heap entry for KNN (track worst of top-K) */
+typedef struct {
+    double  sim;
+    int64_t rowid;
+} knn_entry_t;
+
+static void knn_heap_insert(knn_entry_t* heap, int64_t k, int64_t* size,
+                             double sim, int64_t rowid) {
+    if (*size < k) {
+        /* Heap not full: insert and sift up */
+        int64_t i = (*size)++;
+        heap[i].sim = sim;
+        heap[i].rowid = rowid;
+        /* Sift up (max-heap: parent >= children by sim, so worst at top) */
+        while (i > 0) {
+            int64_t parent = (i - 1) / 2;
+            /* Max-heap: we want the LOWEST similarity at root */
+            if (heap[parent].sim >= heap[i].sim) break;
+            knn_entry_t tmp = heap[parent]; heap[parent] = heap[i]; heap[i] = tmp;
+            i = parent;
+        }
+    } else if (sim > heap[0].sim) {
+        /* Better than worst in heap: replace root and sift down */
+        heap[0].sim = sim;
+        heap[0].rowid = rowid;
+        int64_t i = 0;
+        while (1) {
+            int64_t left = 2*i+1, right = 2*i+2, largest = i;
+            if (left < k && heap[left].sim > heap[largest].sim) largest = left;
+            if (right < k && heap[right].sim > heap[largest].sim) largest = right;
+            if (largest == i) break;
+            knn_entry_t tmp = heap[i]; heap[i] = heap[largest]; heap[largest] = tmp;
+            i = largest;
+        }
+    }
+}
+
+static td_t* exec_knn(td_graph_t* g, td_op_t* op, td_t* emb_vec) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+
+    const float* query = ext->vector.query_vec;
+    int32_t dim = ext->vector.dim;
+    int64_t k = ext->vector.k;
+
+    if (!query || dim <= 0 || k <= 0) return TD_ERR_PTR(TD_ERR_SCHEMA);
+    if (emb_vec->type != TD_F32) return TD_ERR_PTR(TD_ERR_TYPE);
+
+    int64_t total = emb_vec->len;
+    int64_t nrows = total / dim;
+    if (nrows * dim != total) return TD_ERR_PTR(TD_ERR_LENGTH);
+    if (k > nrows) k = nrows;
+
+    const float* data = (const float*)td_data(emb_vec);
+
+    /* Precompute query norm */
+    double q_norm_sq = 0.0;
+    for (int32_t j = 0; j < dim; j++) q_norm_sq += (double)query[j] * query[j];
+    double q_norm = sqrt(q_norm_sq);
+
+    /* Max-heap for top-K */
+    td_t* heap_hdr = NULL;
+    knn_entry_t* heap = (knn_entry_t*)scratch_alloc(&heap_hdr, (size_t)k * sizeof(knn_entry_t));
+    if (!heap) return TD_ERR_PTR(TD_ERR_OOM);
+    int64_t heap_size = 0;
+
+    for (int64_t i = 0; i < nrows; i++) {
+        const float* row = data + i * dim;
+        double dot = 0.0, r_norm_sq = 0.0;
+        for (int32_t j = 0; j < dim; j++) {
+            dot += (double)row[j] * query[j];
+            r_norm_sq += (double)row[j] * row[j];
+        }
+        double r_norm = sqrt(r_norm_sq);
+        double denom = q_norm * r_norm;
+        double sim = (denom > 0.0) ? dot / denom : 0.0;
+        knn_heap_insert(heap, k, &heap_size, sim, i);
+    }
+
+    /* Simple insertion sort (k is small) — descending by similarity */
+    for (int64_t i = 1; i < heap_size; i++) {
+        knn_entry_t key = heap[i];
+        int64_t j = i - 1;
+        while (j >= 0 && heap[j].sim < key.sim) {
+            heap[j + 1] = heap[j];
+            j--;
+        }
+        heap[j + 1] = key;
+    }
+
+    /* Build output table: _rowid (I64), _similarity (F64) */
+    td_t* rowid_vec = td_vec_new(TD_I64, heap_size);
+    td_t* sim_vec   = td_vec_new(TD_F64, heap_size);
+    if (!rowid_vec || TD_IS_ERR(rowid_vec) || !sim_vec || TD_IS_ERR(sim_vec)) {
+        scratch_free(heap_hdr);
+        if (rowid_vec && !TD_IS_ERR(rowid_vec)) td_release(rowid_vec);
+        if (sim_vec && !TD_IS_ERR(sim_vec)) td_release(sim_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    int64_t* rdata = (int64_t*)td_data(rowid_vec);
+    double*  sdata = (double*)td_data(sim_vec);
+    for (int64_t i = 0; i < heap_size; i++) {
+        rdata[i] = heap[i].rowid;
+        sdata[i] = heap[i].sim;
+    }
+    rowid_vec->len = heap_size;
+    sim_vec->len   = heap_size;
+
+    scratch_free(heap_hdr);
+
+    td_t* result = td_table_new(2);
+    if (!result || TD_IS_ERR(result)) {
+        td_release(rowid_vec);
+        td_release(sim_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    result = td_table_add_col(result, td_sym_intern("_rowid", 6), rowid_vec);
+    td_release(rowid_vec);
+    result = td_table_add_col(result, td_sym_intern("_similarity", 11), sim_vec);
+    td_release(sim_vec);
 
     return result;
 }
@@ -13850,6 +14069,28 @@ static td_t* exec_node(td_graph_t* g, td_op_t* op) {
 
         case OP_LOUVAIN: {
             return exec_louvain(g, op);
+        }
+
+        case OP_COSINE_SIM: {
+            td_t* emb = exec_node(g, op->inputs[0]);
+            if (!emb || TD_IS_ERR(emb)) return emb;
+            td_t* result = exec_cosine_sim(g, op, emb);
+            td_release(emb);
+            return result;
+        }
+        case OP_EUCLIDEAN_DIST: {
+            td_t* emb = exec_node(g, op->inputs[0]);
+            if (!emb || TD_IS_ERR(emb)) return emb;
+            td_t* result = exec_euclidean_dist(g, op, emb);
+            td_release(emb);
+            return result;
+        }
+        case OP_KNN: {
+            td_t* emb = exec_node(g, op->inputs[0]);
+            if (!emb || TD_IS_ERR(emb)) return emb;
+            td_t* result = exec_knn(g, op, emb);
+            td_release(emb);
+            return result;
         }
 
         default:

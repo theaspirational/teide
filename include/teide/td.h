@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
 /* MSVC < 17.4 (cl 19.34) does not ship <stdatomic.h>; use Interlocked intrinsics
  * instead. _MSC_VER 1934 corresponds to VS 2022 17.4. */
 #if !defined(_MSC_VER) || _MSC_VER >= 1934
@@ -409,6 +410,11 @@ static inline uint8_t td_sym_dict_width(int64_t dict_size) {
 #define OP_DIJKSTRA        86   /* weighted shortest path (Dijkstra)  */
 #define OP_LOUVAIN         87   /* community detection (Louvain)      */
 
+/* Opcodes — Vector similarity */
+#define OP_COSINE_SIM      88   /* cosine similarity between embeddings   */
+#define OP_EUCLIDEAN_DIST  89   /* euclidean distance between embeddings  */
+#define OP_KNN             90   /* brute-force K nearest neighbors        */
+
 /* Opcodes — Misc */
 #define OP_ALIAS        70
 #define OP_MATERIALIZE  71
@@ -520,6 +526,11 @@ typedef struct td_op_ext {
             uint8_t   n_rels;
             uint8_t   n_vars;
         } wco;
+        struct {  /* OP_COSINE_SIM / OP_EUCLIDEAN_DIST / OP_KNN */
+            float*    query_vec;      /* query embedding (caller-owned, must outlive graph) */
+            int32_t   dim;            /* embedding dimension */
+            int64_t   k;              /* top-K for KNN */
+        } vector;
     };
 } td_op_ext_t;
 
@@ -909,6 +920,14 @@ td_op_t* td_dijkstra(td_graph_t* g, td_op_t* src, td_op_t* dst,
 td_op_t* td_louvain(td_graph_t* g, td_rel_t* rel,
                      uint16_t max_iter);
 
+/* Vector similarity ops */
+td_op_t* td_cosine_sim(td_graph_t* g, td_op_t* emb_col,
+                        const float* query_vec, int32_t dim);
+td_op_t* td_euclidean_dist(td_graph_t* g, td_op_t* emb_col,
+                            const float* query_vec, int32_t dim);
+td_op_t* td_knn(td_graph_t* g, td_op_t* emb_col,
+                 const float* query_vec, int32_t dim, int64_t k);
+
 /* CSR / Relationship API */
 td_rel_t* td_rel_build(td_t* from_table, const char* fk_col,
                          int64_t n_target_nodes, bool sort_targets);
@@ -965,6 +984,32 @@ td_t* td_read_csv_opts(const char* path, char delimiter, bool header,
                         const int8_t* col_types, int32_t n_types);
 td_err_t td_write_csv(td_t* table, const char* path);
 
+
+/* ===== Embedding Column Helpers ===== */
+
+/* An embedding column is a TD_F32 vector of length N*D where D is the
+ * embedding dimension.  D is stored in a separate I32 atom that the
+ * caller keeps alongside the column.  Access helpers: */
+
+/* Create an embedding column for N rows of D-dimensional vectors. */
+td_t* td_embedding_new(int64_t nrows, int32_t dim);
+
+/* Get the raw float pointer for row `row` (0-indexed). */
+static inline float* td_embedding_row(td_t* col, int32_t dim, int64_t row) {
+    return (float*)td_data(col) + row * dim;
+}
+
+/* Set one row's embedding from a float array. */
+static inline void td_embedding_set(td_t* col, int32_t dim,
+                                     int64_t row, const float* vec) {
+    float* dst = td_embedding_row(col, dim, row);
+    memcpy(dst, vec, (size_t)dim * sizeof(float));
+}
+
+/* Number of rows in an embedding column. */
+static inline int64_t td_embedding_nrows(td_t* col, int32_t dim) {
+    return col->len / dim;
+}
 
 /* ===== Pool / Parallel API ===== */
 
