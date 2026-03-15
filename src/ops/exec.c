@@ -12484,14 +12484,14 @@ static td_t* exec_pagerank(td_graph_t* g, td_op_t* op) {
 
     if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
 
-    /* Allocate rank arrays: current and next */
-    td_t* rank_hdr = NULL;
-    td_t* rank_new_hdr = NULL;
-    double* rank     = (double*)scratch_calloc(&rank_hdr, (size_t)n * sizeof(double));
-    double* rank_new = (double*)scratch_calloc(&rank_new_hdr, (size_t)n * sizeof(double));
+    /* Arena for all scratch memory — freed in one shot */
+    td_scratch_arena_t arena;
+    td_scratch_arena_init(&arena);
+
+    double* rank     = (double*)td_scratch_arena_push(&arena, (size_t)n * sizeof(double));
+    double* rank_new = (double*)td_scratch_arena_push(&arena, (size_t)n * sizeof(double));
     if (!rank || !rank_new) {
-        scratch_free(rank_hdr);
-        scratch_free(rank_new_hdr);
+        td_scratch_arena_reset(&arena);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
 
@@ -12525,17 +12525,13 @@ static td_t* exec_pagerank(td_graph_t* g, td_op_t* op) {
         double* tmp = rank;
         rank = rank_new;
         rank_new = tmp;
-        td_t* tmp_hdr = rank_hdr;
-        rank_hdr = rank_new_hdr;
-        rank_new_hdr = tmp_hdr;
     }
 
     /* Build output table: _node (I64), _rank (F64) */
     td_t* node_vec = td_vec_new(TD_I64, n);
     td_t* rank_vec = td_vec_new(TD_F64, n);
     if (!node_vec || TD_IS_ERR(node_vec) || !rank_vec || TD_IS_ERR(rank_vec)) {
-        scratch_free(rank_hdr);
-        scratch_free(rank_new_hdr);
+        td_scratch_arena_reset(&arena);
         if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
         if (rank_vec && !TD_IS_ERR(rank_vec)) td_release(rank_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
@@ -12550,8 +12546,7 @@ static td_t* exec_pagerank(td_graph_t* g, td_op_t* op) {
     node_vec->len = n;
     rank_vec->len = n;
 
-    scratch_free(rank_hdr);
-    scratch_free(rank_new_hdr);
+    td_scratch_arena_reset(&arena);
 
     /* Package as table with named columns */
     td_t* result = td_table_new(2);
@@ -12583,9 +12578,15 @@ static td_t* exec_connected_comp(td_graph_t* g, td_op_t* op) {
     int64_t n = rel->fwd.n_nodes;
     if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
 
-    td_t* label_hdr = NULL;
-    int64_t* label = (int64_t*)scratch_alloc(&label_hdr, (size_t)n * sizeof(int64_t));
-    if (!label) return TD_ERR_PTR(TD_ERR_OOM);
+    /* Arena for all scratch memory — freed in one shot */
+    td_scratch_arena_t arena;
+    td_scratch_arena_init(&arena);
+
+    int64_t* label = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    if (!label) {
+        td_scratch_arena_reset(&arena);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
 
     /* Initialize: each node is its own component */
     for (int64_t i = 0; i < n; i++) label[i] = i;
@@ -12622,7 +12623,7 @@ static td_t* exec_connected_comp(td_graph_t* g, td_op_t* op) {
     td_t* node_vec = td_vec_new(TD_I64, n);
     td_t* comp_vec = td_vec_new(TD_I64, n);
     if (!node_vec || TD_IS_ERR(node_vec) || !comp_vec || TD_IS_ERR(comp_vec)) {
-        scratch_free(label_hdr);
+        td_scratch_arena_reset(&arena);
         if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
         if (comp_vec && !TD_IS_ERR(comp_vec)) td_release(comp_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
@@ -12637,7 +12638,7 @@ static td_t* exec_connected_comp(td_graph_t* g, td_op_t* op) {
     node_vec->len = n;
     comp_vec->len = n;
 
-    scratch_free(label_hdr);
+    td_scratch_arena_reset(&arena);
 
     td_t* result = td_table_new(2);
     if (!result || TD_IS_ERR(result)) {
@@ -12732,21 +12733,21 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
      * and with lazy deletion (visited check on pop) the heap can grow up to m. */
     int64_t heap_cap = (m > n ? m : n) + 1;
 
-    td_t* dist_hdr = NULL;
-    td_t* visited_hdr = NULL;
-    td_t* depth_hdr = NULL;
-    td_t* heap_hdr = NULL;
+    /* Arena for all scratch memory — freed in one shot */
+    td_scratch_arena_t arena;
+    td_scratch_arena_init(&arena);
 
-    double*  dist    = (double*)scratch_alloc(&dist_hdr, (size_t)n * sizeof(double));
-    bool*    visited = (bool*)scratch_calloc(&visited_hdr, (size_t)n * sizeof(bool));
-    int64_t* depth   = (int64_t*)scratch_calloc(&depth_hdr, (size_t)n * sizeof(int64_t));
-    dijk_entry_t* heap = (dijk_entry_t*)scratch_alloc(&heap_hdr,
+    double*  dist    = (double*)td_scratch_arena_push(&arena, (size_t)n * sizeof(double));
+    bool*    visited = (bool*)td_scratch_arena_push(&arena, (size_t)n * sizeof(bool));
+    int64_t* depth   = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    dijk_entry_t* heap = (dijk_entry_t*)td_scratch_arena_push(&arena,
                               (size_t)heap_cap * sizeof(dijk_entry_t));
     if (!dist || !visited || !depth || !heap) {
-        scratch_free(dist_hdr); scratch_free(visited_hdr);
-        scratch_free(depth_hdr); scratch_free(heap_hdr);
+        td_scratch_arena_reset(&arena);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
+    memset(visited, 0, (size_t)n * sizeof(bool));
+    memset(depth, 0, (size_t)n * sizeof(int64_t));
 
     for (int64_t i = 0; i < n; i++) {
         dist[i] = 1e308;  /* infinity */
@@ -12793,8 +12794,7 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
     if (!node_vec || TD_IS_ERR(node_vec) ||
         !dist_vec || TD_IS_ERR(dist_vec) ||
         !depth_vec || TD_IS_ERR(depth_vec)) {
-        scratch_free(dist_hdr); scratch_free(visited_hdr);
-        scratch_free(depth_hdr); scratch_free(heap_hdr);
+        td_scratch_arena_reset(&arena);
         if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
         if (dist_vec && !TD_IS_ERR(dist_vec)) td_release(dist_vec);
         if (depth_vec && !TD_IS_ERR(depth_vec)) td_release(depth_vec);
@@ -12817,8 +12817,7 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
     dist_vec->len = count;
     depth_vec->len = count;
 
-    scratch_free(dist_hdr); scratch_free(visited_hdr);
-    scratch_free(depth_hdr); scratch_free(heap_hdr);
+    td_scratch_arena_reset(&arena);
 
     td_t* result = td_table_new(3);
     if (!result || TD_IS_ERR(result)) {
@@ -12950,16 +12949,15 @@ static td_t* exec_louvain(td_graph_t* g, td_op_t* op) {
 
     if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
 
-    td_t* comm_hdr = NULL;
-    td_t* degree_hdr = NULL;
-    td_t* comm_tot_hdr = NULL;
-    int64_t* community = (int64_t*)scratch_alloc(&comm_hdr, (size_t)n * sizeof(int64_t));
-    int64_t* degree    = (int64_t*)scratch_alloc(&degree_hdr, (size_t)n * sizeof(int64_t));
-    int64_t* comm_tot  = (int64_t*)scratch_alloc(&comm_tot_hdr, (size_t)n * sizeof(int64_t));
+    /* Arena for all scratch memory — freed in one shot */
+    td_scratch_arena_t arena;
+    td_scratch_arena_init(&arena);
+
+    int64_t* community = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    int64_t* degree    = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    int64_t* comm_tot  = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
     if (!community || !degree || !comm_tot) {
-        scratch_free(comm_hdr);
-        scratch_free(degree_hdr);
-        scratch_free(comm_tot_hdr);
+        td_scratch_arena_reset(&arena);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
 
@@ -12980,24 +12978,14 @@ static td_t* exec_louvain(td_graph_t* g, td_op_t* op) {
 
     /* Scratch space for per-community edge counts (reused across iterations).
      * k_i_in[c] = number of edges from node v to community c. */
-    td_t* ki_hdr = NULL;
-    int64_t* k_i_in = (int64_t*)scratch_calloc(&ki_hdr, (size_t)n * sizeof(int64_t));
-    if (!k_i_in) {
-        scratch_free(comm_hdr);
-        scratch_free(degree_hdr);
-        scratch_free(comm_tot_hdr);
-        return TD_ERR_PTR(TD_ERR_OOM);
-    }
+    int64_t* k_i_in = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
     /* Track which communities were touched so we can reset k_i_in efficiently */
-    td_t* touched_hdr = NULL;
-    int64_t* touched = (int64_t*)scratch_alloc(&touched_hdr, (size_t)n * sizeof(int64_t));
-    if (!touched) {
-        scratch_free(comm_hdr);
-        scratch_free(degree_hdr);
-        scratch_free(comm_tot_hdr);
-        scratch_free(ki_hdr);
+    int64_t* touched = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    if (!k_i_in || !touched) {
+        td_scratch_arena_reset(&arena);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
+    memset(k_i_in, 0, (size_t)n * sizeof(int64_t));
 
     for (uint16_t iter = 0; iter < max_iter; iter++) {
         bool moved = false;
@@ -13050,16 +13038,11 @@ static td_t* exec_louvain(td_graph_t* g, td_op_t* op) {
         }
         if (!moved) break;
     }
-    scratch_free(ki_hdr);
-    scratch_free(touched_hdr);
 
     /* Normalize community IDs to 0..k-1 */
-    td_t* remap_hdr = NULL;
-    int64_t* remap = (int64_t*)scratch_alloc(&remap_hdr, (size_t)n * sizeof(int64_t));
+    int64_t* remap = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
     if (!remap) {
-        scratch_free(comm_hdr);
-        scratch_free(degree_hdr);
-        scratch_free(comm_tot_hdr);
+        td_scratch_arena_reset(&arena);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
     for (int64_t i = 0; i < n; i++) remap[i] = -1;
@@ -13074,10 +13057,7 @@ static td_t* exec_louvain(td_graph_t* g, td_op_t* op) {
     td_t* node_vec = td_vec_new(TD_I64, n);
     td_t* comm_vec = td_vec_new(TD_I64, n);
     if (!node_vec || TD_IS_ERR(node_vec) || !comm_vec || TD_IS_ERR(comm_vec)) {
-        scratch_free(comm_hdr);
-        scratch_free(degree_hdr);
-        scratch_free(comm_tot_hdr);
-        scratch_free(remap_hdr);
+        td_scratch_arena_reset(&arena);
         if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
         if (comm_vec && !TD_IS_ERR(comm_vec)) td_release(comm_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
@@ -13092,10 +13072,7 @@ static td_t* exec_louvain(td_graph_t* g, td_op_t* op) {
     node_vec->len = n;
     comm_vec->len = n;
 
-    scratch_free(comm_hdr);
-    scratch_free(degree_hdr);
-    scratch_free(comm_tot_hdr);
-    scratch_free(remap_hdr);
+    td_scratch_arena_reset(&arena);
 
     td_t* result = td_table_new(2);
     if (!result || TD_IS_ERR(result)) {
@@ -13218,11 +13195,10 @@ static void knn_heap_insert(knn_entry_t* heap, int64_t k, int64_t* size,
         int64_t i = (*size)++;
         heap[i].sim = sim;
         heap[i].rowid = rowid;
-        /* Sift up (max-heap: parent >= children by sim, so worst at top) */
+        /* Sift up (min-heap: root = lowest similarity = worst of top-K) */
         while (i > 0) {
             int64_t parent = (i - 1) / 2;
-            /* Max-heap: we want the LOWEST similarity at root */
-            if (heap[parent].sim >= heap[i].sim) break;
+            if (heap[parent].sim <= heap[i].sim) break;
             knn_entry_t tmp = heap[parent]; heap[parent] = heap[i]; heap[i] = tmp;
             i = parent;
         }
@@ -13232,12 +13208,12 @@ static void knn_heap_insert(knn_entry_t* heap, int64_t k, int64_t* size,
         heap[0].rowid = rowid;
         int64_t i = 0;
         while (1) {
-            int64_t left = 2*i+1, right = 2*i+2, largest = i;
-            if (left < k && heap[left].sim > heap[largest].sim) largest = left;
-            if (right < k && heap[right].sim > heap[largest].sim) largest = right;
-            if (largest == i) break;
-            knn_entry_t tmp = heap[i]; heap[i] = heap[largest]; heap[largest] = tmp;
-            i = largest;
+            int64_t left = 2*i+1, right = 2*i+2, smallest = i;
+            if (left < *size && heap[left].sim < heap[smallest].sim) smallest = left;
+            if (right < *size && heap[right].sim < heap[smallest].sim) smallest = right;
+            if (smallest == i) break;
+            knn_entry_t tmp = heap[i]; heap[i] = heap[smallest]; heap[smallest] = tmp;
+            i = smallest;
         }
     }
 }
