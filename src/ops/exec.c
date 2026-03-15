@@ -13182,7 +13182,7 @@ static td_t* exec_euclidean_dist(td_graph_t* g, td_op_t* op, td_t* emb_vec) {
  * Returns TD_TABLE with _rowid (I64) and _similarity (F64), sorted desc.
  * -------------------------------------------------------------------------- */
 
-/* Max-heap entry for KNN (track worst of top-K) */
+/* Min-heap entry for KNN (track worst of top-K) */
 typedef struct {
     double  sim;
     int64_t rowid;
@@ -13241,7 +13241,7 @@ static td_t* exec_knn(td_graph_t* g, td_op_t* op, td_t* emb_vec) {
     for (int32_t j = 0; j < dim; j++) q_norm_sq += (double)query[j] * query[j];
     double q_norm = sqrt(q_norm_sq);
 
-    /* Max-heap for top-K */
+    /* Min-heap for top-K */
     td_t* heap_hdr = NULL;
     knn_entry_t* heap = (knn_entry_t*)scratch_alloc(&heap_hdr, (size_t)k * sizeof(knn_entry_t));
     if (!heap) return TD_ERR_PTR(TD_ERR_OOM);
