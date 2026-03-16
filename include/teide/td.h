@@ -414,6 +414,7 @@ static inline uint8_t td_sym_dict_width(int64_t dict_size) {
 #define OP_COSINE_SIM      88   /* cosine similarity between embeddings   */
 #define OP_EUCLIDEAN_DIST  89   /* euclidean distance between embeddings  */
 #define OP_KNN             90   /* brute-force K nearest neighbors        */
+#define OP_HNSW_KNN        91   /* HNSW approximate K nearest neighbors   */
 
 /* Opcodes — Misc */
 #define OP_ALIAS        70
@@ -531,6 +532,13 @@ typedef struct td_op_ext {
             int32_t   dim;            /* embedding dimension */
             int64_t   k;              /* top-K for KNN */
         } vector;
+        struct {  /* OP_HNSW_KNN */
+            void*     hnsw_idx;       /* td_hnsw_t* (opaque, must outlive graph) */
+            float*    query_vec;
+            int32_t   dim;
+            int64_t   k;
+            int32_t   ef_search;
+        } hnsw;
     };
 } td_op_ext_t;
 
@@ -641,6 +649,7 @@ typedef struct td_task      td_task_t;
 typedef struct td_dispatch  td_dispatch_t;
 typedef struct td_csr       td_csr_t;
 typedef struct td_rel       td_rel_t;
+typedef struct td_hnsw      td_hnsw_t;
 
 /* ===== Thread Types ===== */
 
@@ -927,6 +936,11 @@ td_op_t* td_euclidean_dist(td_graph_t* g, td_op_t* emb_col,
                             const float* query_vec, int32_t dim);
 td_op_t* td_knn(td_graph_t* g, td_op_t* emb_col,
                  const float* query_vec, int32_t dim, int64_t k);
+
+/* HNSW-accelerated KNN (uses pre-built index instead of brute-force) */
+td_op_t* td_hnsw_knn(td_graph_t* g, td_hnsw_t* idx,
+                       const float* query_vec, int32_t dim,
+                       int64_t k, int32_t ef_search);
 
 /* CSR / Relationship API */
 td_rel_t* td_rel_build(td_t* from_table, const char* fk_col,

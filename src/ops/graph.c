@@ -23,6 +23,7 @@
 
 #include "graph.h"
 #include "store/csr.h"
+#include "store/hnsw.h"
 #include "mem/sys.h"
 #include <string.h>
 
@@ -1310,6 +1311,28 @@ td_op_t* td_knn(td_graph_t* g, td_op_t* emb_col,
     ext->vector.query_vec = (float*)query_vec;
     ext->vector.dim       = dim;
     ext->vector.k         = k;
+
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}
+
+td_op_t* td_hnsw_knn(td_graph_t* g, td_hnsw_t* idx,
+                       const float* query_vec, int32_t dim,
+                       int64_t k, int32_t ef_search) {
+    if (!g || !idx || !query_vec || dim <= 0 || k <= 0) return NULL;
+
+    td_op_ext_t* ext = graph_alloc_ext_node(g);
+    if (!ext) return NULL;
+
+    ext->base.opcode    = OP_HNSW_KNN;
+    ext->base.arity     = 0;  /* nullary: reads from index directly */
+    ext->base.out_type  = TD_TABLE;
+    ext->base.est_rows  = (uint32_t)k;
+    ext->hnsw.hnsw_idx  = idx;
+    ext->hnsw.query_vec = (float*)query_vec;
+    ext->hnsw.dim       = dim;
+    ext->hnsw.k         = k;
+    ext->hnsw.ef_search = ef_search > 0 ? ef_search : HNSW_DEFAULT_EF_S;
 
     g->nodes[ext->base.id] = ext->base;
     return &g->nodes[ext->base.id];

@@ -25,6 +25,7 @@
 #include "hash.h"
 #include "pool.h"
 #include "store/csr.h"
+#include "store/hnsw.h"
 #include "lftj.h"
 #include "mem/heap.h"
 #include <string.h>
@@ -13306,6 +13307,66 @@ static td_t* exec_knn(td_graph_t* g, td_op_t* op, td_t* emb_vec) {
     return result;
 }
 
+static td_t* exec_hnsw_knn(td_graph_t* g, td_op_t* op) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+
+    td_hnsw_t* idx = (td_hnsw_t*)ext->hnsw.hnsw_idx;
+    const float* query = ext->hnsw.query_vec;
+    int32_t dim = ext->hnsw.dim;
+    int64_t k = ext->hnsw.k;
+    int32_t ef = ext->hnsw.ef_search;
+
+    if (!idx || !query || dim <= 0 || k <= 0) return TD_ERR_PTR(TD_ERR_SCHEMA);
+
+    /* Pre-allocate output arrays */
+    td_t* ids_hdr = NULL;
+    int64_t* out_ids = (int64_t*)scratch_alloc(&ids_hdr, (size_t)k * sizeof(int64_t));
+    if (!out_ids) return TD_ERR_PTR(TD_ERR_OOM);
+
+    td_t* dists_hdr = NULL;
+    double* out_dists = (double*)scratch_alloc(&dists_hdr, (size_t)k * sizeof(double));
+    if (!out_dists) { scratch_free(ids_hdr); return TD_ERR_PTR(TD_ERR_OOM); }
+
+    int64_t n_found = td_hnsw_search(idx, query, dim, k, ef, out_ids, out_dists);
+
+    /* Build output table: _rowid (I64), _similarity (F64) */
+    td_t* rowid_vec = td_vec_new(TD_I64, n_found);
+    td_t* sim_vec   = td_vec_new(TD_F64, n_found);
+    if (!rowid_vec || TD_IS_ERR(rowid_vec) || !sim_vec || TD_IS_ERR(sim_vec)) {
+        scratch_free(ids_hdr);
+        scratch_free(dists_hdr);
+        if (rowid_vec && !TD_IS_ERR(rowid_vec)) td_release(rowid_vec);
+        if (sim_vec && !TD_IS_ERR(sim_vec)) td_release(sim_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    int64_t* rdata = (int64_t*)td_data(rowid_vec);
+    double*  sdata = (double*)td_data(sim_vec);
+    for (int64_t i = 0; i < n_found; i++) {
+        rdata[i] = out_ids[i];
+        sdata[i] = 1.0 - out_dists[i];  /* convert distance back to similarity */
+    }
+    rowid_vec->len = n_found;
+    sim_vec->len   = n_found;
+
+    scratch_free(ids_hdr);
+    scratch_free(dists_hdr);
+
+    td_t* result = td_table_new(2);
+    if (!result || TD_IS_ERR(result)) {
+        td_release(rowid_vec);
+        td_release(sim_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    result = td_table_add_col(result, td_sym_intern("_rowid", 6), rowid_vec);
+    td_release(rowid_vec);
+    result = td_table_add_col(result, td_sym_intern("_similarity", 11), sim_vec);
+    td_release(sim_vec);
+
+    return result;
+}
+
 /* ============================================================================
  * Recursive executor
  * ============================================================================ */
@@ -14067,6 +14128,9 @@ static td_t* exec_node(td_graph_t* g, td_op_t* op) {
             td_t* result = exec_knn(g, op, emb);
             td_release(emb);
             return result;
+        }
+        case OP_HNSW_KNN: {
+            return exec_hnsw_knn(g, op);
         }
 
         default:

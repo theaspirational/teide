@@ -109,6 +109,7 @@ static const char* opcode_name(uint16_t op) {
         case OP_COSINE_SIM:    return "COSINE_SIM";
         case OP_EUCLIDEAN_DIST:return "EUCLIDEAN_DIST";
         case OP_KNN:           return "KNN";
+        case OP_HNSW_KNN:     return "HNSW_KNN";
         default:               return "UNKNOWN";
     }
 }
