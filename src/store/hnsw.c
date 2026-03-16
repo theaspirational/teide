@@ -652,6 +652,18 @@ td_err_t td_hnsw_save(const td_hnsw_t* idx, const char* dir) {
         fclose(f);
     }
 
+    /* Write vectors */
+    snprintf(path, sizeof(path), "%s/hnsw_vectors.bin", dir);
+    f = fopen(path, "wb");
+    if (!f) return TD_ERR_IO;
+    size_t vec_count = (size_t)idx->n_nodes * (size_t)idx->dim;
+    if (vec_count > 0) {
+        if (fwrite(idx->vectors, sizeof(float), vec_count, f) != vec_count) {
+            fclose(f); return TD_ERR_IO;
+        }
+    }
+    fclose(f);
+
     return TD_OK;
 }
 
@@ -684,8 +696,8 @@ static td_hnsw_t* hnsw_load_impl(const char* dir, bool use_mmap) {
     idx->M_max0 = hdr.M_max0;
     idx->ef_construction = hdr.ef_construction;
     idx->entry_point = hdr.entry_point;
-    idx->vectors = NULL;  /* caller must set vectors pointer after load */
-    idx->owns_data = false;
+    idx->vectors = NULL;
+    idx->owns_data = true;
 
     /* Read node levels */
     snprintf(path, sizeof(path), "%s/hnsw_levels.bin", dir);
@@ -732,6 +744,21 @@ static td_hnsw_t* hnsw_load_impl(const char* dir, bool use_mmap) {
 
         fclose(f);
     }
+
+    /* Read vectors */
+    snprintf(path, sizeof(path), "%s/hnsw_vectors.bin", dir);
+    f = fopen(path, "rb");
+    if (!f) { td_hnsw_free(idx); return NULL; }
+    size_t vec_count = (size_t)hdr.n_nodes * (size_t)hdr.dim;
+    if (vec_count > 0) {
+        float* vecs = (float*)td_sys_alloc(vec_count * sizeof(float));
+        if (!vecs) { fclose(f); td_hnsw_free(idx); return NULL; }
+        if (fread(vecs, sizeof(float), vec_count, f) != vec_count) {
+            fclose(f); td_sys_free(vecs); td_hnsw_free(idx); return NULL;
+        }
+        idx->vectors = vecs;
+    }
+    fclose(f);
 
     return idx;
 }
