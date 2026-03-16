@@ -499,12 +499,9 @@ td_hnsw_t* td_hnsw_build(const float* vectors, int64_t n_nodes, int32_t dim,
 
                 int64_t* their_nb = &layer->neighbors[nb_local * M_max_l];
                 if (!add_neighbor(their_nb, M_max_l, i)) {
-                    /* Neighbor list full — prune to keep M closest */
-                    /* First add i by replacing farthest */
-                    prune_neighbors(idx, nb_id, their_nb, M_max_l, M_max_l);
-                    /* Try again after pruning — if still no room, force replace farthest */
-                    add_neighbor(their_nb, M_max_l, i);
+                    /* Neighbor list full — prune to make room, then add i */
                     prune_neighbors(idx, nb_id, their_nb, M_max_l, M_keep);
+                    add_neighbor(their_nb, M_max_l, i);
                 }
             }
 
