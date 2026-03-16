@@ -411,7 +411,7 @@ td_hnsw_t* td_hnsw_build(const float* vectors, int64_t n_nodes, int32_t dim,
 
     /* Allocate node levels */
     idx->node_level = (int8_t*)td_sys_alloc((size_t)n_nodes * sizeof(int8_t));
-    if (!idx->node_level) { td_sys_free(idx); return NULL; }
+    if (!idx->node_level) { td_hnsw_free(idx); return NULL; }
 
     /* Assign random levels to all nodes */
     int32_t max_level = 0;
@@ -697,7 +697,9 @@ static td_hnsw_t* hnsw_load_impl(const char* dir, bool use_mmap) {
     fclose(f);
 
     if (hdr.n_nodes <= 0 || hdr.dim <= 0 || hdr.n_layers <= 0 ||
-        hdr.n_layers > HNSW_MAX_LAYERS) return NULL;
+        hdr.n_layers > HNSW_MAX_LAYERS ||
+        hdr.M <= 0 || hdr.M_max0 <= 0 ||
+        hdr.entry_point < 0 || hdr.entry_point >= hdr.n_nodes) return NULL;
 
     td_hnsw_t* idx = (td_hnsw_t*)td_sys_alloc(sizeof(td_hnsw_t));
     if (!idx) return NULL;
