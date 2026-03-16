@@ -49,7 +49,7 @@ static double hnsw_cosine_dist(const float* a, const float* b, int32_t dim) {
  * Random level assignment (HNSW paper, Section 3.1)
  * -------------------------------------------------------------------------- */
 
-static uint32_t hnsw_rng_state = 42;
+static _Thread_local uint32_t hnsw_rng_state = 42;
 
 static uint32_t hnsw_rand(void) {
     /* xorshift32 — fast, deterministic, no global state collision */
@@ -400,8 +400,14 @@ td_hnsw_t* td_hnsw_build(const float* vectors, int64_t n_nodes, int32_t dim,
     idx->M_max0 = 2 * M;
     idx->ef_construction = ef_construction;
     idx->entry_point = 0;
-    idx->vectors = vectors;
-    idx->owns_data = false;
+    /* Copy vectors so the index owns its data — prevents use-after-free
+     * if the caller frees the original buffer. */
+    size_t vec_bytes = (size_t)n_nodes * (size_t)dim * sizeof(float);
+    float* vec_copy = (float*)td_sys_alloc(vec_bytes);
+    if (!vec_copy) { td_sys_free(idx); return NULL; }
+    memcpy(vec_copy, vectors, vec_bytes);
+    idx->vectors = vec_copy;
+    idx->owns_data = true;
 
     /* Allocate node levels */
     idx->node_level = (int8_t*)td_sys_alloc((size_t)n_nodes * sizeof(int8_t));
@@ -565,6 +571,14 @@ int64_t td_hnsw_search(const td_hnsw_t* idx,
 
     td_sys_free(results);
     return result_count;
+}
+
+/* --------------------------------------------------------------------------
+ * Accessors
+ * -------------------------------------------------------------------------- */
+
+int32_t td_hnsw_dim(const td_hnsw_t* idx) {
+    return idx ? idx->dim : 0;
 }
 
 /* --------------------------------------------------------------------------

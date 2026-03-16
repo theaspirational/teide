@@ -321,6 +321,18 @@ static void csr_free(td_csr_t* csr) {
     csr->props = NULL;
 }
 
+void td_rel_set_props(td_rel_t* rel, td_t* props) {
+    if (!rel || !props) return;
+    /* Retain twice: fwd.props and rev.props both alias the same pointer,
+     * and csr_free() releases each independently. */
+    td_retain(props);
+    td_retain(props);
+    if (rel->fwd.props) td_release(rel->fwd.props);
+    if (rel->rev.props) td_release(rel->rev.props);
+    rel->fwd.props = props;
+    rel->rev.props = props;
+}
+
 void td_rel_free(td_rel_t* rel) {
     if (!rel) return;
     csr_free(&rel->fwd);

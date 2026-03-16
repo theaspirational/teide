@@ -80,6 +80,9 @@ int64_t td_hnsw_search(const td_hnsw_t* idx,
                          int64_t k, int32_t ef_search,
                          int64_t* out_ids, double* out_dists);
 
+/* --- Accessors --- */
+int32_t td_hnsw_dim(const td_hnsw_t* idx);
+
 /* --- Persistence --- */
 td_err_t td_hnsw_save(const td_hnsw_t* idx, const char* dir);
 td_hnsw_t* td_hnsw_load(const char* dir);

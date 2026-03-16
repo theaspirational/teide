@@ -381,6 +381,18 @@ void td_vec_set_null(td_t* vec, int64_t idx, bool is_null) {
         bits[byte_idx] &= (uint8_t)~(1u << bit_idx);
 }
 
+/* --------------------------------------------------------------------------
+ * td_embedding_new — create a flat F32 vector for N*D embedding storage
+ * -------------------------------------------------------------------------- */
+
+td_t* td_embedding_new(int64_t nrows, int32_t dim) {
+    int64_t total = nrows * (int64_t)dim;
+    td_t* v = td_vec_new(TD_F32, total);
+    if (!v || TD_IS_ERR(v)) return v;
+    v->len = total;
+    return v;
+}
+
 bool td_vec_is_null(td_t* vec, int64_t idx) {
     if (!vec || TD_IS_ERR(vec)) return false;
     if (idx < 0 || idx >= vec->len) return false;
