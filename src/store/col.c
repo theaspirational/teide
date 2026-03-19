@@ -319,10 +319,11 @@ static td_t* col_read_recursive(const uint8_t** pp, size_t* remaining) {
         size_t data_size = (size_t)len * esz;
         if (data_size > *remaining) return TD_ERR_PTR(TD_ERR_CORRUPT);
 
-        td_t* vec = td_vec_new(type, len);
+        td_t* vec = (type == TD_SYM)
+            ? td_sym_vec_new(attrs & TD_SYM_W_MASK, len)
+            : td_vec_new(type, len);
         if (!vec || TD_IS_ERR(vec)) return vec;
         vec->len = len;
-        vec->attrs = attrs;
         if (data_size > 0)
             memcpy(td_data(vec), *pp, data_size);
         *pp += data_size; *remaining -= data_size;
