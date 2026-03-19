@@ -456,11 +456,11 @@ td_err_t td_sym_save(const char* path) {
              * If it does, the failure is a real I/O/corruption error;
              * do not overwrite the file with a potentially incomplete
              * in-memory snapshot. */
-            FILE* probe = fopen(path, "rb");
-            if (probe) {
+            td_fd_t probe_fd = td_file_open(path, TD_OPEN_READ);
+            if (probe_fd != TD_FD_INVALID) {
                 /* File exists and is readable but td_col_load failed —
                  * corruption or format error; do not overwrite. */
-                fclose(probe);
+                td_file_close(probe_fd);
                 td_file_unlock(lock_fd);
                 td_file_close(lock_fd);
                 return TD_IS_ERR(existing) ? TD_ERR_CODE(existing) : TD_ERR_IO;

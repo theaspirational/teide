@@ -157,7 +157,7 @@ static td_t* col_load_str_list(const uint8_t* ptr, size_t remaining) {
     memcpy(&count, ptr, 8);
     ptr += 8; remaining -= 8;
 
-    if (count < 0 || (uint64_t)count > remaining)
+    if (count < 0 || (uint64_t)count > remaining / 4)
         return TD_ERR_PTR(TD_ERR_CORRUPT);
 
     td_t* list = td_list_new(count);
