@@ -66,6 +66,8 @@ static td_err_t validate_sym_bounds(const void* data, int64_t len,
         }
         break;
     }
+    default:
+        return TD_ERR_CORRUPT;
     }
 
     if (max_id >= sym_count) return TD_ERR_CORRUPT;
@@ -324,6 +326,12 @@ static td_t* col_read_recursive(const uint8_t** pp, size_t* remaining) {
         if (data_size > 0)
             memcpy(td_data(vec), *pp, data_size);
         *pp += data_size; *remaining -= data_size;
+
+        if (type == TD_SYM) {
+            uint32_t sc = td_sym_count();
+            td_err_t ve = validate_sym_bounds(td_data(vec), len, attrs, sc);
+            if (ve != TD_OK) { td_free(vec); return TD_ERR_PTR(ve); }
+        }
         return vec;
     }
 

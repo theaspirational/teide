@@ -134,9 +134,6 @@ extern "C" {
 #define TD_IS_SYM(t)         ((t) == TD_SYM)
 #define TD_SYM_ELEM(attrs)   (1u << ((attrs) & TD_SYM_W_MASK))  /* 1,2,4,8 */
 
-/* Dictionary metadata key (splay tree) */
-#define TD_META_DICT  0x4449  /* "DI" — per-column dictionary */
-
 /* Parted types: composite of TD_PARTED_BASE + base type */
 #define TD_PARTED_BASE   32
 #define TD_MAPCOMMON     64   /* virtual partition column */
