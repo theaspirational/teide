@@ -476,30 +476,41 @@ td_err_t td_sym_save(const char* path) {
         }
     }
 
-    /* Snapshot current state under sym_lock */
+    /* Snapshot string pointers under sym_lock, then build list without it.
+     * Strings are append-only and never freed, so pointers remain valid. */
     sym_lock();
     uint32_t count = g_sym.str_count;
+    size_t snap_sz = count * sizeof(td_t*);
+    td_t* snap_block = td_alloc(snap_sz);
+    if (!snap_block) {
+        sym_unlock();
+        td_file_unlock(lock_fd);
+        td_file_close(lock_fd);
+        return TD_ERR_OOM;
+    }
+    td_t** snap = (td_t**)td_data(snap_block);
+    memcpy(snap, g_sym.strings, snap_sz);
+    sym_unlock();
 
-    /* Build TD_LIST of TD_ATOM_STR from all interned strings */
+    /* Build TD_LIST of TD_ATOM_STR from snapshot */
     td_t* list = td_list_new((int64_t)count);
     if (!list || TD_IS_ERR(list)) {
-        sym_unlock();
+        td_free(snap_block);
         td_file_unlock(lock_fd);
         td_file_close(lock_fd);
         return TD_ERR_OOM;
     }
 
     for (uint32_t i = 0; i < count; i++) {
-        td_t* s = g_sym.strings[i];
-        list = td_list_append(list, s);
+        list = td_list_append(list, snap[i]);
         if (!list || TD_IS_ERR(list)) {
-            sym_unlock();
+            td_free(snap_block);
             td_file_unlock(lock_fd);
             td_file_close(lock_fd);
             return TD_ERR_OOM;
         }
     }
-    sym_unlock();
+    td_free(snap_block);
 
     /* Save to temp file via td_col_save (writes STRL format) */
     err = td_col_save(list, tmp_path);

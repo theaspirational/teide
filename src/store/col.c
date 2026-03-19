@@ -331,7 +331,7 @@ static td_t* col_read_recursive(const uint8_t** pp, size_t* remaining) {
         if (type == TD_SYM) {
             uint32_t sc = td_sym_count();
             td_err_t ve = validate_sym_bounds(td_data(vec), len, attrs, sc);
-            if (ve != TD_OK) { td_free(vec); return TD_ERR_PTR(ve); }
+            if (ve != TD_OK) { td_release(vec); return TD_ERR_PTR(ve); }
         }
         return vec;
     }
