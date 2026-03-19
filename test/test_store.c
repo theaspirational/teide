@@ -1078,6 +1078,164 @@ static MunitResult test_file_shared_lock_concurrent(const void* params, void* fi
     return MUNIT_OK;
 }
 
+/* ---- test_sym_col_bounds_reject ----------------------------------------- */
+
+static MunitResult test_sym_col_bounds_reject(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+
+    /* Intern a few symbols so sym_count > 0 */
+    td_sym_intern("sym_a", 5);
+    td_sym_intern("sym_b", 5);
+    uint32_t sc = td_sym_count();
+    munit_assert_uint(sc, >=, 2);
+
+    /* Build a W8 TD_SYM column with valid indices */
+    td_t* vec = td_sym_vec_new(TD_SYM_W8, 4);
+    munit_assert_ptr_not_null(vec);
+    munit_assert_false(TD_IS_ERR(vec));
+    vec->len = 4;
+    uint8_t* data = (uint8_t*)td_data(vec);
+    data[0] = 0; data[1] = 1; data[2] = 0; data[3] = 1;
+
+    /* Save — should embed sym count in header rc field */
+    td_err_t err = td_col_save(vec, TMP_COL_PATH);
+    munit_assert_int(err, ==, TD_OK);
+
+    /* Load back — should succeed since all indices < sym_count */
+    td_t* loaded = td_col_load(TMP_COL_PATH);
+    munit_assert_ptr_not_null(loaded);
+    munit_assert_false(TD_IS_ERR(loaded));
+    munit_assert_int(loaded->type, ==, TD_SYM);
+    munit_assert_int(loaded->len, ==, 4);
+    td_release(loaded);
+
+    /* Now craft a column with an out-of-range index */
+    data[2] = (uint8_t)(sc + 10);  /* beyond sym table */
+    err = td_col_save(vec, TMP_COL_PATH);
+    munit_assert_int(err, ==, TD_OK);
+
+    /* Load should fail with TD_ERR_CORRUPT */
+    td_t* bad = td_col_load(TMP_COL_PATH);
+    munit_assert_true(TD_IS_ERR(bad));
+    munit_assert_int(TD_ERR_CODE(bad), ==, TD_ERR_CORRUPT);
+
+    /* Same test via mmap */
+    bad = td_col_mmap(TMP_COL_PATH);
+    munit_assert_true(TD_IS_ERR(bad));
+    munit_assert_int(TD_ERR_CODE(bad), ==, TD_ERR_CORRUPT);
+
+    td_release(vec);
+    unlink(TMP_COL_PATH);
+    return MUNIT_OK;
+}
+
+/* ---- test_sym_col_count_mismatch --------------------------------------- */
+
+static MunitResult test_sym_col_count_mismatch(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+
+    /* Intern enough symbols to have a known count */
+    td_sym_intern("cnt_a", 5);
+    td_sym_intern("cnt_b", 5);
+    td_sym_intern("cnt_c", 5);
+    td_sym_intern("cnt_d", 5);
+    uint32_t sc = td_sym_count();
+    munit_assert_uint(sc, >=, 4);
+
+    /* Build a W8 TD_SYM column with valid indices */
+    td_t* vec = td_sym_vec_new(TD_SYM_W8, 3);
+    munit_assert_ptr_not_null(vec);
+    munit_assert_false(TD_IS_ERR(vec));
+    vec->len = 3;
+    uint8_t* data = (uint8_t*)td_data(vec);
+    data[0] = 0; data[1] = 1; data[2] = 2;
+
+    /* Save with current sym count */
+    td_err_t err = td_col_save(vec, TMP_COL_PATH);
+    munit_assert_int(err, ==, TD_OK);
+    td_release(vec);
+
+    /* Destroy sym table and re-init with fewer symbols.
+     * This simulates loading a column against a smaller sym table. */
+    td_sym_destroy();
+    td_sym_init();
+    td_sym_intern("only_one", 8);
+    uint32_t new_sc = td_sym_count();
+    munit_assert_uint(new_sc, <, sc);
+
+    /* Load should fail: saved sym count > current sym count (fast-reject) */
+    td_t* bad = td_col_load(TMP_COL_PATH);
+    munit_assert_true(TD_IS_ERR(bad));
+    munit_assert_int(TD_ERR_CODE(bad), ==, TD_ERR_CORRUPT);
+
+    /* Same via mmap */
+    bad = td_col_mmap(TMP_COL_PATH);
+    munit_assert_true(TD_IS_ERR(bad));
+    munit_assert_int(TD_ERR_CODE(bad), ==, TD_ERR_CORRUPT);
+
+    unlink(TMP_COL_PATH);
+    return MUNIT_OK;
+}
+
+/* ---- test_sym_col_valid_roundtrip -------------------------------------- */
+
+static MunitResult test_sym_col_valid_roundtrip(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+
+    /* Intern symbols */
+    int64_t id0 = td_sym_intern("rt_alpha", 8);
+    int64_t id1 = td_sym_intern("rt_beta", 7);
+    int64_t id2 = td_sym_intern("rt_gamma", 8);
+
+    /* Build W16 TD_SYM column */
+    td_t* vec = td_sym_vec_new(TD_SYM_W16, 5);
+    munit_assert_ptr_not_null(vec);
+    munit_assert_false(TD_IS_ERR(vec));
+    vec->len = 5;
+    uint16_t* data = (uint16_t*)td_data(vec);
+    data[0] = (uint16_t)id0;
+    data[1] = (uint16_t)id1;
+    data[2] = (uint16_t)id2;
+    data[3] = (uint16_t)id0;
+    data[4] = (uint16_t)id1;
+
+    /* Save + load roundtrip */
+    td_err_t err = td_col_save(vec, TMP_COL_PATH);
+    munit_assert_int(err, ==, TD_OK);
+
+    td_t* loaded = td_col_load(TMP_COL_PATH);
+    munit_assert_ptr_not_null(loaded);
+    munit_assert_false(TD_IS_ERR(loaded));
+    munit_assert_int(loaded->type, ==, TD_SYM);
+    munit_assert_int(loaded->len, ==, 5);
+    munit_assert_uint(loaded->attrs & TD_SYM_W_MASK, ==, TD_SYM_W16);
+
+    uint16_t* ld = (uint16_t*)td_data(loaded);
+    munit_assert_int(ld[0], ==, id0);
+    munit_assert_int(ld[1], ==, id1);
+    munit_assert_int(ld[2], ==, id2);
+    munit_assert_int(ld[3], ==, id0);
+    munit_assert_int(ld[4], ==, id1);
+
+    td_release(loaded);
+
+    /* Save + mmap roundtrip */
+    td_t* mapped = td_col_mmap(TMP_COL_PATH);
+    munit_assert_ptr_not_null(mapped);
+    munit_assert_false(TD_IS_ERR(mapped));
+    munit_assert_int(mapped->type, ==, TD_SYM);
+    munit_assert_int(mapped->len, ==, 5);
+
+    uint16_t* md = (uint16_t*)td_data(mapped);
+    munit_assert_int(md[0], ==, id0);
+    munit_assert_int(md[2], ==, id2);
+
+    td_release(mapped);
+    td_release(vec);
+    unlink(TMP_COL_PATH);
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest store_tests[] = {
@@ -1102,6 +1260,9 @@ static MunitTest store_tests[] = {
     { "/file_sync",           test_file_sync_op,        store_setup, store_teardown, 0, NULL },
     { "/file_rename",         test_file_rename_op,      store_setup, store_teardown, 0, NULL },
     { "/file_shared_lock",    test_file_shared_lock_concurrent, store_setup, store_teardown, 0, NULL },
+    { "/sym_col_bounds_reject", test_sym_col_bounds_reject, store_setup, store_teardown, 0, NULL },
+    { "/sym_col_count_mismatch", test_sym_col_count_mismatch, store_setup, store_teardown, 0, NULL },
+    { "/sym_col_valid_roundtrip", test_sym_col_valid_roundtrip, store_setup, store_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

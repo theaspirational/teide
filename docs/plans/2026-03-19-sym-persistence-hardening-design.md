@@ -191,11 +191,11 @@ Behavior:
 
 ### Task 3: Column bounds validation + sym count metadata (col.c)
 
-- [ ] Add `validate_sym_bounds()` static helper in `src/store/col.c` — width-dispatched scan for max index
-- [ ] Call `validate_sym_bounds()` in `td_col_load` and `td_col_mmap` for TD_SYM columns
-- [ ] Store sym count metadata on save: `td_meta_set(col, TD_META_DICT, ...)` in `td_col_save` for TD_SYM columns
-- [ ] Validate sym count metadata on load: fast-reject if sym table too small
-- [ ] Write tests: out-of-range index rejection, sym count metadata mismatch
+- [x] Add `validate_sym_bounds()` static helper in `src/store/col.c` — width-dispatched scan for max index
+- [x] Call `validate_sym_bounds()` in `td_col_load` and `td_col_mmap` for TD_SYM columns
+- [x] Store sym count metadata on save: `td_meta_set(col, TD_META_DICT, ...)` in `td_col_save` for TD_SYM columns
+- [x] Validate sym count metadata on load: fast-reject if sym table too small
+- [x] Write tests: out-of-range index rejection, sym count metadata mismatch
 
 ### Task 4: Mandatory sym-before-data (splay.c + part.c + td.h API update)
 
