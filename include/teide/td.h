@@ -1001,7 +1001,7 @@ td_t*    td_col_mmap(const char* path);
 
 /* Splayed table I/O */
 td_err_t td_splay_save(td_t* tbl, const char* dir, const char* sym_path);
-td_t*    td_splay_load(const char* dir);
+td_t*    td_splay_load(const char* dir, const char* sym_path);
 td_t*    td_read_splayed(const char* dir, const char* sym_path);
 
 /* Partitioned table */

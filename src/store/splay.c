@@ -104,8 +104,14 @@ td_err_t td_splay_save(td_t* tbl, const char* dir, const char* sym_path) {
  * td_splay_load — load a splayed table from a directory
  * -------------------------------------------------------------------------- */
 
-td_t* td_splay_load(const char* dir) {
+td_t* td_splay_load(const char* dir, const char* sym_path) {
     if (!dir) return TD_ERR_PTR(TD_ERR_IO);
+
+    /* Load symbol table if sym_path provided */
+    if (sym_path) {
+        td_err_t sym_err = td_sym_load(sym_path);
+        if (sym_err != TD_OK) return TD_ERR_PTR(sym_err);
+    }
 
     /* Load .d schema */
     char path[1024];
@@ -165,6 +171,25 @@ td_t* td_splay_load(const char* dir) {
     }
 
     td_release(schema);
+
+    /* Post-load check: reject if sym table is empty but table has TD_SYM columns,
+     * or if schema expected columns but none could be loaded (sym needed for names) */
+    if (td_sym_count() == 0) {
+        int64_t nc = td_table_ncols(tbl);
+        /* Schema had columns but we loaded none — sym table was needed for names */
+        if (ncols > 0 && nc == 0) {
+            td_release(tbl);
+            return TD_ERR_PTR(TD_ERR_CORRUPT);
+        }
+        for (int64_t c = 0; c < nc; c++) {
+            td_t* col = td_table_get_col_idx(tbl, c);
+            if (col && col->type == TD_SYM) {
+                td_release(tbl);
+                return TD_ERR_PTR(TD_ERR_CORRUPT);
+            }
+        }
+    }
+
     return tbl;
 }
 
@@ -178,12 +203,10 @@ td_t* td_splay_load(const char* dir) {
 td_t* td_read_splayed(const char* dir, const char* sym_path) {
     if (!dir) return TD_ERR_PTR(TD_ERR_IO);
 
-    /* Load symbol table if sym_path provided */
+    /* Load symbol table if sym_path provided — failure is fatal */
     if (sym_path) {
         td_err_t sym_err = td_sym_load(sym_path);
-        if (sym_err != TD_OK) {
-            /* Non-fatal: proceed without symbols; columns may be unnamed */
-        }
+        if (sym_err != TD_OK) return TD_ERR_PTR(sym_err);
     }
 
     /* Load .d schema (small, use td_col_load — buddy copy is fine) */
@@ -243,5 +266,23 @@ td_t* td_read_splayed(const char* dir, const char* sym_path) {
     }
 
     td_release(schema);
+
+    /* Post-load check: reject if sym table is empty but table has TD_SYM columns,
+     * or if schema expected columns but none could be loaded (sym needed for names) */
+    if (td_sym_count() == 0) {
+        int64_t nc = td_table_ncols(tbl);
+        if (ncols > 0 && nc == 0) {
+            td_release(tbl);
+            return TD_ERR_PTR(TD_ERR_CORRUPT);
+        }
+        for (int64_t c = 0; c < nc; c++) {
+            td_t* col = td_table_get_col_idx(tbl, c);
+            if (col && col->type == TD_SYM) {
+                td_release(tbl);
+                return TD_ERR_PTR(TD_ERR_CORRUPT);
+            }
+        }
+    }
+
     return tbl;
 }

@@ -199,13 +199,13 @@ Behavior:
 
 ### Task 4: Mandatory sym-before-data (splay.c + part.c + td.h API update)
 
-- [ ] Change `td_splay_load` signature to `td_splay_load(const char* dir, const char* sym_path)`
-- [ ] Implement: if sym_path provided, call `td_sym_load`; post-load check for TD_SYM columns with empty sym table
-- [ ] Make sym failure fatal in `td_read_splayed`
-- [ ] Update `td_part_load` to construct sym_path and pass to `td_splay_load`
-- [ ] Update `include/teide/td.h` with new `td_splay_load` signature
-- [ ] Update all call sites and tests for new signature
-- [ ] Write integration tests: splay load with/without sym, TD_SYM columns + missing sym
+- [x] Change `td_splay_load` signature to `td_splay_load(const char* dir, const char* sym_path)`
+- [x] Implement: if sym_path provided, call `td_sym_load`; post-load check for TD_SYM columns with empty sym table
+- [x] Make sym failure fatal in `td_read_splayed`
+- [x] Update `td_part_load` to construct sym_path and pass to `td_splay_load`
+- [x] Update `include/teide/td.h` with new `td_splay_load` signature
+- [x] Update all call sites and tests for new signature
+- [x] Write integration tests: splay load with/without sym, TD_SYM columns + missing sym
 
 ## Test Plan
 
