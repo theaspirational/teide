@@ -22,8 +22,10 @@
  */
 
 #include "sym.h"
+#include "store/fileio.h"
 #include "mem/sys.h"
 #include <string.h>
+#include <stdio.h>
 #include <stdatomic.h>
 
 /* --------------------------------------------------------------------------
@@ -56,6 +58,9 @@ typedef struct {
     td_t**     strings;
     uint32_t   str_count;
     uint32_t   str_cap;
+
+    /* Persistence: entries [0..persisted_count-1] are known on disk */
+    uint32_t   persisted_count;
 } sym_table_t;
 
 static sym_table_t g_sym;
@@ -366,137 +371,169 @@ bool td_sym_ensure_cap(uint32_t needed) {
 }
 
 /* --------------------------------------------------------------------------
- * td_sym_save -- serialize symbol table to a binary file
+ * td_sym_save -- serialize symbol table as TD_LIST of TD_ATOM_STR
  *
- * Format:
- *   [4B magic "TSYM"][4B count]
- *   For each symbol: [4B len][len bytes data]
+ * Uses td_col_save (STRL format), file locking for concurrent writers,
+ * and fsync + atomic rename for crash safety.  Append-only: skips save
+ * when persisted_count == str_count.
  * -------------------------------------------------------------------------- */
-
-#include <stdio.h>
 
 td_err_t td_sym_save(const char* path) {
     if (!path) return TD_ERR_IO;
     if (!atomic_load_explicit(&g_sym_inited, memory_order_acquire)) return TD_ERR_IO;
 
-    /* Hold the lock for the entire save to prevent concurrent td_sym_intern
-     * from reallocating the strings array or mutating str_count mid-save. */
+    /* Quick check: nothing new to persist? */
     sym_lock();
-    uint32_t count = g_sym.str_count;
-    td_t** strings = g_sym.strings;
-
-    FILE* f = fopen(path, "wb");
-    if (!f) { sym_unlock(); return TD_ERR_IO; }
-
-    uint32_t magic = 0x4D595354;  /* "TSYM" little-endian */
-
-    if (fwrite(&magic, 4, 1, f) != 1 ||
-        fwrite(&count, 4, 1, f) != 1) {
-        fclose(f);
+    if (g_sym.persisted_count == g_sym.str_count) {
         sym_unlock();
-        return TD_ERR_IO;
+        return TD_OK;
     }
+    sym_unlock();
 
-    for (uint32_t i = 0; i < count; i++) {
-        td_t* s = strings[i];
-        uint32_t len = (uint32_t)td_str_len(s);
-        const char* data = td_str_ptr(s);
+    /* Build lock and temp paths */
+    char lock_path[4096];
+    char tmp_path[4096];
+    snprintf(lock_path, sizeof(lock_path), "%s.lk", path);
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
 
-        if (fwrite(&len, 4, 1, f) != 1 ||
-            (len > 0 && fwrite(data, 1, len, f) != len)) {
-            fclose(f);
-            sym_unlock();
-            return TD_ERR_IO;
+    /* Acquire cross-process exclusive lock */
+    td_fd_t lock_fd = td_file_open(lock_path, TD_OPEN_READ | TD_OPEN_WRITE | TD_OPEN_CREATE);
+    if (lock_fd == TD_FD_INVALID) return TD_ERR_IO;
+    td_err_t err = td_file_lock_ex(lock_fd);
+    if (err != TD_OK) { td_file_close(lock_fd); return err; }
+
+    /* If file exists, load and merge (pick up entries from other writers) */
+    FILE* probe = fopen(path, "rb");
+    if (probe) {
+        fclose(probe);
+        td_t* existing = td_col_load(path);
+        if (existing && !TD_IS_ERR(existing)) {
+            /* Intern any new entries from disk (idempotent) */
+            td_t** slots = (td_t**)td_data(existing);
+            for (int64_t i = 0; i < existing->len; i++) {
+                td_t* s = slots[i];
+                td_sym_intern(td_str_ptr(s), td_str_len(s));
+            }
+            td_release(existing);
         }
     }
 
-    fclose(f);
+    /* Snapshot current state under sym_lock */
+    sym_lock();
+    uint32_t count = g_sym.str_count;
+
+    /* Build TD_LIST of TD_ATOM_STR from all interned strings */
+    td_t* list = td_list_new((int64_t)count);
+    if (!list || TD_IS_ERR(list)) {
+        sym_unlock();
+        td_file_unlock(lock_fd);
+        td_file_close(lock_fd);
+        return TD_ERR_OOM;
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        td_t* s = g_sym.strings[i];
+        list = td_list_append(list, s);
+        if (!list || TD_IS_ERR(list)) {
+            sym_unlock();
+            td_file_unlock(lock_fd);
+            td_file_close(lock_fd);
+            return TD_ERR_OOM;
+        }
+    }
     sym_unlock();
+
+    /* Save to temp file via td_col_save (writes STRL format) */
+    err = td_col_save(list, tmp_path);
+    td_release(list);
+    if (err != TD_OK) {
+        td_file_unlock(lock_fd);
+        td_file_close(lock_fd);
+        return err;
+    }
+
+    /* Fsync temp file for durability */
+    td_fd_t tmp_fd = td_file_open(tmp_path, TD_OPEN_READ | TD_OPEN_WRITE);
+    if (tmp_fd != TD_FD_INVALID) {
+        td_file_sync(tmp_fd);
+        td_file_close(tmp_fd);
+    }
+
+    /* Atomic rename: tmp -> final path */
+    err = td_file_rename(tmp_path, path);
+    if (err != TD_OK) {
+        td_file_unlock(lock_fd);
+        td_file_close(lock_fd);
+        return err;
+    }
+
+    /* Update persisted count */
+    sym_lock();
+    g_sym.persisted_count = count;
+    sym_unlock();
+
+    td_file_unlock(lock_fd);
+    td_file_close(lock_fd);
     return TD_OK;
 }
 
 /* --------------------------------------------------------------------------
- * td_sym_load -- deserialize symbol table from a binary file
+ * td_sym_load -- load symbol table from TD_LIST file (STRL format)
  *
- * Interns all symbols from the file into the global symbol table.
- * Must be called after td_sym_init(). Existing symbols are preserved
- * (td_sym_intern is idempotent for matching strings).
+ * Uses td_col_load to read the list, then interns entries beyond what's
+ * already in memory.  File locking prevents reading a partial write.
  * -------------------------------------------------------------------------- */
 
 td_err_t td_sym_load(const char* path) {
     if (!path) return TD_ERR_IO;
     if (!atomic_load_explicit(&g_sym_inited, memory_order_acquire)) return TD_ERR_IO;
 
-    FILE* f = fopen(path, "rb");
-    if (!f) return TD_ERR_IO;
+    /* Acquire cross-process shared lock */
+    char lock_path[4096];
+    snprintf(lock_path, sizeof(lock_path), "%s.lk", path);
+    td_fd_t lock_fd = td_file_open(lock_path, TD_OPEN_READ | TD_OPEN_WRITE | TD_OPEN_CREATE);
+    if (lock_fd == TD_FD_INVALID) return TD_ERR_IO;
+    td_err_t err = td_file_lock_sh(lock_fd);
+    if (err != TD_OK) { td_file_close(lock_fd); return err; }
 
-    uint32_t magic, count;
-    if (fread(&magic, 4, 1, f) != 1 ||
-        fread(&count, 4, 1, f) != 1) {
-        fclose(f);
+    /* Load the sym file as a TD_LIST of TD_ATOM_STR */
+    td_t* list = td_col_load(path);
+    if (!list || TD_IS_ERR(list)) {
+        td_err_t code = TD_IS_ERR(list) ? TD_ERR_CODE(list) : TD_ERR_IO;
+        td_file_unlock(lock_fd);
+        td_file_close(lock_fd);
+        return code;
+    }
+
+    if (list->type != TD_LIST) {
+        td_release(list);
+        td_file_unlock(lock_fd);
+        td_file_close(lock_fd);
         return TD_ERR_CORRUPT;
     }
 
-    if (magic != 0x4D595354) {
-        fclose(f);
-        return TD_ERR_CORRUPT;
-    }
-
-    /* Reject unreasonable count to prevent DoS from crafted files */
-    if (count > 100000000u) { /* 100M max symbols */
-        fclose(f);
-        return TD_ERR_CORRUPT;
-    }
-
-    /* Read buffer -- reuse for all strings */
-    char buf[4096];
-    char* heap_buf = NULL;
-    size_t heap_cap = 0;
-
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t len;
-        if (fread(&len, 4, 1, f) != 1) {
-            if (heap_buf) td_sys_free(heap_buf);
-            fclose(f);
+    /* Skip entries already in memory, intern remaining */
+    uint32_t already = td_sym_count();
+    td_t** slots = (td_t**)td_data(list);
+    for (int64_t i = (int64_t)already; i < list->len; i++) {
+        td_t* s = slots[i];
+        if (!s || TD_IS_ERR(s) || s->type != TD_ATOM_STR) {
+            td_release(list);
+            td_file_unlock(lock_fd);
+            td_file_close(lock_fd);
             return TD_ERR_CORRUPT;
         }
-
-        if (len > 16 * 1024 * 1024) { /* 16MB max per symbol */
-            if (heap_buf) td_sys_free(heap_buf);
-            fclose(f);
-            return TD_ERR_CORRUPT;
-        }
-
-        char* dst = buf;
-        if (len > sizeof(buf)) {
-            if (len > heap_cap) {
-                char* nb = (char*)td_sys_realloc(heap_buf, len);
-                if (!nb) {
-                    if (heap_buf) td_sys_free(heap_buf);
-                    fclose(f);
-                    return TD_ERR_OOM;
-                }
-                heap_buf = nb;
-                heap_cap = len;
-            }
-            dst = heap_buf;
-        }
-
-        if (len > 0 && fread(dst, 1, len, f) != len) {
-            if (heap_buf) td_sys_free(heap_buf);
-            fclose(f);
-            return TD_ERR_CORRUPT;
-        }
-
-        int64_t id = td_sym_intern(dst, len);
+        int64_t id = td_sym_intern(td_str_ptr(s), td_str_len(s));
         if (id < 0) {
-            if (heap_buf) td_sys_free(heap_buf);
-            fclose(f);
+            td_release(list);
+            td_file_unlock(lock_fd);
+            td_file_close(lock_fd);
             return TD_ERR_OOM;
         }
     }
 
-    if (heap_buf) td_sys_free(heap_buf);
-    fclose(f);
+    td_release(list);
+    td_file_unlock(lock_fd);
+    td_file_close(lock_fd);
     return TD_OK;
 }

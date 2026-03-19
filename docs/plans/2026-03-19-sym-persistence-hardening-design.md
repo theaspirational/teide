@@ -183,11 +183,11 @@ Behavior:
 
 ### Task 2: Sym save/load rewrite (sym.c td_t list format + append-only + locking)
 
-- [ ] Add `persisted_count` field to `sym_table_t` in `src/table/sym.h`
-- [ ] Rewrite `td_sym_save` in `src/table/sym.c`: build TD_LIST of TD_ATOM_STR, use td_col_save, file locking, fsync + atomic rename, append-only logic
-- [ ] Rewrite `td_sym_load` in `src/table/sym.c`: td_col_load, skip already-loaded entries, file locking
-- [ ] Delete old TSYM format code (magic 0x4D595354, length-prefixed entries)
-- [ ] Update `test/test_sym.c` with save/load roundtrip, append-only, corrupt file tests
+- [x] Add `persisted_count` field to `sym_table_t` in `src/table/sym.h`
+- [x] Rewrite `td_sym_save` in `src/table/sym.c`: build TD_LIST of TD_ATOM_STR, use td_col_save, file locking, fsync + atomic rename, append-only logic
+- [x] Rewrite `td_sym_load` in `src/table/sym.c`: td_col_load, skip already-loaded entries, file locking
+- [x] Delete old TSYM format code (magic 0x4D595354, length-prefixed entries)
+- [x] Update `test/test_sym.c` with save/load roundtrip, append-only, corrupt file tests
 
 ### Task 3: Column bounds validation + sym count metadata (col.c)
 
