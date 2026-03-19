@@ -57,6 +57,10 @@ src/ops/exec.c              Fused morsel-driven executor (all opcodes)
 src/ops/opt.c               Optimizer passes (type inference, SIP, factorize, predicate pushdown, filter reorder, fusion, DCE)
 src/ops/lftj.{h,c}         Leapfrog Triejoin — iterator, search, enumeration
 src/ops/fvec.{h,c}         Factorized vectors — td_fvec_t, td_ftable_t
+src/store/fileio.{h,c}     Cross-platform file I/O — locking (flock/LockFileEx), fsync, atomic rename
+src/table/sym.{h,c}        Global sym intern table — save/load, append-only persistence, file locking
 test/test_csr.c             Graph engine tests (42 tests)
 test/test_opt.c             Optimizer pass tests (filter reorder, predicate pushdown)
+test/test_store.c           Storage tests (file I/O, sym persistence, col bounds validation)
+test/test_sym.c             Sym table tests (save/load roundtrip, append-only, corruption)
 ```

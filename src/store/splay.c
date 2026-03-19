@@ -39,6 +39,21 @@
  * (rejecting '/', '\\', '..', leading '.') cover main attack vector.
  * -------------------------------------------------------------------------- */
 
+/* Post-load validation: reject if sym table is empty but table has TD_SYM
+ * columns, or if schema expected columns but none could be loaded. */
+static td_err_t validate_sym_columns(td_t* tbl, int64_t schema_ncols) {
+    if (td_sym_count() != 0) return TD_OK;
+
+    int64_t nc = td_table_ncols(tbl);
+    if (schema_ncols > 0 && nc == 0) return TD_ERR_CORRUPT;
+
+    for (int64_t c = 0; c < nc; c++) {
+        td_t* col = td_table_get_col_idx(tbl, c);
+        if (col && col->type == TD_SYM) return TD_ERR_CORRUPT;
+    }
+    return TD_OK;
+}
+
 /* --------------------------------------------------------------------------
  * td_splay_save — save a table to a splayed table directory
  * -------------------------------------------------------------------------- */
@@ -172,22 +187,10 @@ td_t* td_splay_load(const char* dir, const char* sym_path) {
 
     td_release(schema);
 
-    /* Post-load check: reject if sym table is empty but table has TD_SYM columns,
-     * or if schema expected columns but none could be loaded (sym needed for names) */
-    if (td_sym_count() == 0) {
-        int64_t nc = td_table_ncols(tbl);
-        /* Schema had columns but we loaded none — sym table was needed for names */
-        if (ncols > 0 && nc == 0) {
-            td_release(tbl);
-            return TD_ERR_PTR(TD_ERR_CORRUPT);
-        }
-        for (int64_t c = 0; c < nc; c++) {
-            td_t* col = td_table_get_col_idx(tbl, c);
-            if (col && col->type == TD_SYM) {
-                td_release(tbl);
-                return TD_ERR_PTR(TD_ERR_CORRUPT);
-            }
-        }
+    td_err_t sym_check = validate_sym_columns(tbl, ncols);
+    if (sym_check != TD_OK) {
+        td_release(tbl);
+        return TD_ERR_PTR(sym_check);
     }
 
     return tbl;
@@ -267,21 +270,10 @@ td_t* td_read_splayed(const char* dir, const char* sym_path) {
 
     td_release(schema);
 
-    /* Post-load check: reject if sym table is empty but table has TD_SYM columns,
-     * or if schema expected columns but none could be loaded (sym needed for names) */
-    if (td_sym_count() == 0) {
-        int64_t nc = td_table_ncols(tbl);
-        if (ncols > 0 && nc == 0) {
-            td_release(tbl);
-            return TD_ERR_PTR(TD_ERR_CORRUPT);
-        }
-        for (int64_t c = 0; c < nc; c++) {
-            td_t* col = td_table_get_col_idx(tbl, c);
-            if (col && col->type == TD_SYM) {
-                td_release(tbl);
-                return TD_ERR_PTR(TD_ERR_CORRUPT);
-            }
-        }
+    td_err_t sym_check = validate_sym_columns(tbl, ncols);
+    if (sym_check != TD_OK) {
+        td_release(tbl);
+        return TD_ERR_PTR(sym_check);
     }
 
     return tbl;

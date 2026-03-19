@@ -1,7 +1,7 @@
 # Sym Persistence Hardening Design
 
 **Date**: 2026-03-19
-**Status**: Approved
+**Status**: Done
 **Goal**: Harden the kdb+-style global sym file model to prevent on-disk corruption, stale sym mismatches, and concurrent write races — without removing TD_SYM or sacrificing its performance advantages.
 
 ## Background

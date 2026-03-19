@@ -343,6 +343,7 @@ bool td_sym_ensure_cap(uint32_t needed) {
             new_str_cap |= new_str_cap >> 8;
             new_str_cap |= new_str_cap >> 16;
             new_str_cap++;
+            if (new_str_cap == 0) { sym_unlock(); return false; }
         }
         td_t** new_strings = (td_t**)td_sys_realloc(g_sym.strings,
                                                      (size_t)new_str_cap * sizeof(td_t*));
@@ -391,8 +392,8 @@ td_err_t td_sym_save(const char* path) {
     sym_unlock();
 
     /* Build lock and temp paths */
-    char lock_path[4096];
-    char tmp_path[4096];
+    char lock_path[1024];
+    char tmp_path[1024];
     snprintf(lock_path, sizeof(lock_path), "%s.lk", path);
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
 
@@ -403,9 +404,7 @@ td_err_t td_sym_save(const char* path) {
     if (err != TD_OK) { td_file_close(lock_fd); return err; }
 
     /* If file exists, load and merge (pick up entries from other writers) */
-    FILE* probe = fopen(path, "rb");
-    if (probe) {
-        fclose(probe);
+    {
         td_t* existing = td_col_load(path);
         if (existing && !TD_IS_ERR(existing)) {
             /* Intern any new entries from disk (idempotent) */
@@ -454,9 +453,17 @@ td_err_t td_sym_save(const char* path) {
 
     /* Fsync temp file for durability */
     td_fd_t tmp_fd = td_file_open(tmp_path, TD_OPEN_READ | TD_OPEN_WRITE);
-    if (tmp_fd != TD_FD_INVALID) {
-        td_file_sync(tmp_fd);
-        td_file_close(tmp_fd);
+    if (tmp_fd == TD_FD_INVALID) {
+        td_file_unlock(lock_fd);
+        td_file_close(lock_fd);
+        return TD_ERR_IO;
+    }
+    err = td_file_sync(tmp_fd);
+    td_file_close(tmp_fd);
+    if (err != TD_OK) {
+        td_file_unlock(lock_fd);
+        td_file_close(lock_fd);
+        return err;
     }
 
     /* Atomic rename: tmp -> final path */
@@ -489,7 +496,7 @@ td_err_t td_sym_load(const char* path) {
     if (!atomic_load_explicit(&g_sym_inited, memory_order_acquire)) return TD_ERR_IO;
 
     /* Acquire cross-process shared lock */
-    char lock_path[4096];
+    char lock_path[1024];
     snprintf(lock_path, sizeof(lock_path), "%s.lk", path);
     td_fd_t lock_fd = td_file_open(lock_path, TD_OPEN_READ | TD_OPEN_WRITE | TD_OPEN_CREATE);
     if (lock_fd == TD_FD_INVALID) return TD_ERR_IO;
@@ -531,6 +538,11 @@ td_err_t td_sym_load(const char* path) {
             return TD_ERR_OOM;
         }
     }
+
+    /* Update persisted count to reflect loaded state */
+    sym_lock();
+    g_sym.persisted_count = g_sym.str_count;
+    sym_unlock();
 
     td_release(list);
     td_file_unlock(lock_fd);

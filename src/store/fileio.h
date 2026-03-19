@@ -26,26 +26,13 @@
 
 #include <teide/td.h>
 
+/* td_fd_t, TD_FD_INVALID, TD_OPEN_*, and td_file_* function declarations
+ * are provided by <teide/td.h>.  This header exists only for internal
+ * source files that need the Windows-specific includes for the
+ * implementation (fileio.c). */
+
 #ifdef _WIN32
   #include <windows.h>
-  typedef HANDLE td_fd_t;
-  #define TD_FD_INVALID INVALID_HANDLE_VALUE
-#else
-  typedef int td_fd_t;
-  #define TD_FD_INVALID (-1)
 #endif
-
-/* Open flags (combined with |) */
-#define TD_OPEN_READ   0x01
-#define TD_OPEN_WRITE  0x02
-#define TD_OPEN_CREATE 0x04  /* create if not exists */
-
-td_fd_t  td_file_open(const char* path, int flags);
-void     td_file_close(td_fd_t fd);
-td_err_t td_file_lock_ex(td_fd_t fd);   /* exclusive (write) */
-td_err_t td_file_lock_sh(td_fd_t fd);   /* shared (read) */
-td_err_t td_file_unlock(td_fd_t fd);
-td_err_t td_file_sync(td_fd_t fd);
-td_err_t td_file_rename(const char* old_path, const char* new_path);
 
 #endif /* TD_FILEIO_H */
