@@ -394,8 +394,10 @@ td_err_t td_sym_save(const char* path) {
     /* Build lock and temp paths */
     char lock_path[1024];
     char tmp_path[1024];
-    snprintf(lock_path, sizeof(lock_path), "%s.lk", path);
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    if (snprintf(lock_path, sizeof(lock_path), "%s.lk", path) >= (int)sizeof(lock_path))
+        return TD_ERR_IO;
+    if (snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path) >= (int)sizeof(tmp_path))
+        return TD_ERR_IO;
 
     /* Acquire cross-process exclusive lock */
     td_fd_t lock_fd = td_file_open(lock_path, TD_OPEN_READ | TD_OPEN_WRITE | TD_OPEN_CREATE);
@@ -407,10 +409,22 @@ td_err_t td_sym_save(const char* path) {
     {
         td_t* existing = td_col_load(path);
         if (existing && !TD_IS_ERR(existing)) {
+            if (existing->type != TD_LIST) {
+                td_release(existing);
+                td_file_unlock(lock_fd);
+                td_file_close(lock_fd);
+                return TD_ERR_CORRUPT;
+            }
             /* Intern any new entries from disk (idempotent) */
             td_t** slots = (td_t**)td_data(existing);
             for (int64_t i = 0; i < existing->len; i++) {
                 td_t* s = slots[i];
+                if (!s || TD_IS_ERR(s) || s->type != TD_ATOM_STR) {
+                    td_release(existing);
+                    td_file_unlock(lock_fd);
+                    td_file_close(lock_fd);
+                    return TD_ERR_CORRUPT;
+                }
                 td_sym_intern(td_str_ptr(s), td_str_len(s));
             }
             td_release(existing);
@@ -446,6 +460,7 @@ td_err_t td_sym_save(const char* path) {
     err = td_col_save(list, tmp_path);
     td_release(list);
     if (err != TD_OK) {
+        remove(tmp_path);
         td_file_unlock(lock_fd);
         td_file_close(lock_fd);
         return err;
@@ -497,7 +512,8 @@ td_err_t td_sym_load(const char* path) {
 
     /* Acquire cross-process shared lock */
     char lock_path[1024];
-    snprintf(lock_path, sizeof(lock_path), "%s.lk", path);
+    if (snprintf(lock_path, sizeof(lock_path), "%s.lk", path) >= (int)sizeof(lock_path))
+        return TD_ERR_IO;
     td_fd_t lock_fd = td_file_open(lock_path, TD_OPEN_READ | TD_OPEN_WRITE | TD_OPEN_CREATE);
     if (lock_fd == TD_FD_INVALID) return TD_ERR_IO;
     td_err_t err = td_file_lock_sh(lock_fd);
@@ -519,9 +535,30 @@ td_err_t td_sym_load(const char* path) {
         return TD_ERR_CORRUPT;
     }
 
-    /* Skip entries already in memory, intern remaining */
+    /* Validate existing entries match, then intern remaining */
     uint32_t already = td_sym_count();
     td_t** slots = (td_t**)td_data(list);
+
+    /* Validate entries [0..already-1] match what's in memory */
+    for (int64_t i = 0; i < (int64_t)already && i < list->len; i++) {
+        td_t* s = slots[i];
+        if (!s || TD_IS_ERR(s) || s->type != TD_ATOM_STR) {
+            td_release(list);
+            td_file_unlock(lock_fd);
+            td_file_close(lock_fd);
+            return TD_ERR_CORRUPT;
+        }
+        td_t* mem_s = td_sym_str(i);
+        if (!mem_s || td_str_len(mem_s) != td_str_len(s) ||
+            memcmp(td_str_ptr(mem_s), td_str_ptr(s), td_str_len(s)) != 0) {
+            td_release(list);
+            td_file_unlock(lock_fd);
+            td_file_close(lock_fd);
+            return TD_ERR_CORRUPT;
+        }
+    }
+
+    /* Intern entries beyond what's already in memory */
     for (int64_t i = (int64_t)already; i < list->len; i++) {
         td_t* s = slots[i];
         if (!s || TD_IS_ERR(s) || s->type != TD_ATOM_STR) {

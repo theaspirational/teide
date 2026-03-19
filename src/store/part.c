@@ -374,7 +374,7 @@ td_t* td_read_parted(const char* db_root, const char* table_name) {
             part_tables[p] = NULL;
             goto fail_tables;
         }
-        part_tables[p] = td_read_splayed(path, sym_path);
+        part_tables[p] = td_read_splayed(path, NULL);
         if (!part_tables[p] || TD_IS_ERR(part_tables[p])) {
             part_tables[p] = NULL;
             goto fail_tables;

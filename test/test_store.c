@@ -1295,6 +1295,7 @@ static MunitResult test_splay_load_with_sym(const void* params, void* fixture) {
     td_release(tbl);
     (void)!system("rm -rf " TMP_SPLAY_SYM_DIR);
     unlink(TMP_SYM_PATH);
+    unlink(TMP_SYM_PATH ".lk");
     return MUNIT_OK;
 }
 
@@ -1340,6 +1341,7 @@ static MunitResult test_splay_load_sym_missing_corrupt(const void* params, void*
     td_release(tbl);
     (void)!system("rm -rf " TMP_SPLAY_SYM_DIR);
     unlink(TMP_SYM_PATH);
+    unlink(TMP_SYM_PATH ".lk");
     return MUNIT_OK;
 }
 

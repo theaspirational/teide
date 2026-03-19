@@ -579,9 +579,11 @@ td_t* td_col_load(const char* path) {
         return TD_ERR_PTR(TD_ERR_CORRUPT);
     }
 
-    /* TD_SYM: fast-reject via sym count in header rc field */
+    /* TD_SYM: fast-reject via sym count in header rc field.
+     * Use memcpy (not atomic_load) since file data is not atomic storage. */
     if (tmp->type == TD_SYM) {
-        uint32_t saved_sc = atomic_load_explicit(&tmp->rc, memory_order_relaxed);
+        uint32_t saved_sc;
+        memcpy(&saved_sc, (const char*)ptr + offsetof(td_t, rc), sizeof(saved_sc));
         uint32_t cur_sc = td_sym_count();
         if (saved_sc > 0 && cur_sc > 0 && cur_sc < saved_sc) {
             td_vm_unmap_file(ptr, mapped_size);
@@ -691,9 +693,11 @@ td_t* td_col_mmap(const char* path) {
         return TD_ERR_PTR(TD_ERR_IO);
     }
 
-    /* TD_SYM: fast-reject via sym count in header rc field + bounds check */
+    /* TD_SYM: fast-reject via sym count in header rc field + bounds check.
+     * Use memcpy (not atomic_load) since file data is not atomic storage. */
     if (vec->type == TD_SYM) {
-        uint32_t saved_sc = atomic_load_explicit(&vec->rc, memory_order_relaxed);
+        uint32_t saved_sc;
+        memcpy(&saved_sc, (const char*)ptr + offsetof(td_t, rc), sizeof(saved_sc));
         uint32_t cur_sc = td_sym_count();
         if (saved_sc > 0 && cur_sc > 0 && cur_sc < saved_sc) {
             td_vm_unmap_file(ptr, mapped_size);
