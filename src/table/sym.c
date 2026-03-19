@@ -469,6 +469,7 @@ td_err_t td_sym_save(const char* path) {
     /* Fsync temp file for durability */
     td_fd_t tmp_fd = td_file_open(tmp_path, TD_OPEN_READ | TD_OPEN_WRITE);
     if (tmp_fd == TD_FD_INVALID) {
+        remove(tmp_path);
         td_file_unlock(lock_fd);
         td_file_close(lock_fd);
         return TD_ERR_IO;
@@ -476,6 +477,7 @@ td_err_t td_sym_save(const char* path) {
     err = td_file_sync(tmp_fd);
     td_file_close(tmp_fd);
     if (err != TD_OK) {
+        remove(tmp_path);
         td_file_unlock(lock_fd);
         td_file_close(lock_fd);
         return err;
@@ -484,6 +486,7 @@ td_err_t td_sym_save(const char* path) {
     /* Atomic rename: tmp -> final path */
     err = td_file_rename(tmp_path, path);
     if (err != TD_OK) {
+        remove(tmp_path);
         td_file_unlock(lock_fd);
         td_file_close(lock_fd);
         return err;
