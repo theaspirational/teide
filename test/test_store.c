@@ -986,7 +986,7 @@ static MunitResult test_file_lock_unlock(const void* params, void* fixture) {
     /* Invalid fd → error */
     munit_assert_int(td_file_lock_ex(TD_FD_INVALID), ==, TD_ERR_IO);
     munit_assert_int(td_file_lock_sh(TD_FD_INVALID), ==, TD_ERR_IO);
-    munit_assert_int(td_file_unlock(TD_FD_INVALID), ==, TD_ERR_IO);
+    munit_assert_int(td_file_unlock(TD_FD_INVALID), ==, TD_OK);
 
     td_file_close(fd);
     unlink(TMP_FILEIO_PATH);

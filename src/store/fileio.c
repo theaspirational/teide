@@ -81,7 +81,7 @@ td_err_t td_file_lock_sh(td_fd_t fd) {
 }
 
 td_err_t td_file_unlock(td_fd_t fd) {
-    if (fd == TD_FD_INVALID) return TD_ERR_IO;
+    if (fd == TD_FD_INVALID) return TD_OK;
     OVERLAPPED ov = {0};
     if (!UnlockFileEx(fd, 0, MAXDWORD, MAXDWORD, &ov))
         return TD_ERR_IO;
@@ -154,7 +154,7 @@ td_err_t td_file_lock_sh(td_fd_t fd) {
 }
 
 td_err_t td_file_unlock(td_fd_t fd) {
-    if (fd == TD_FD_INVALID) return TD_ERR_IO;
+    if (fd == TD_FD_INVALID) return TD_OK;
     if (flock(fd, LOCK_UN) != 0) return TD_ERR_IO;
     return TD_OK;
 }
