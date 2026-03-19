@@ -932,6 +932,152 @@ static MunitResult test_col_save_load_table(const void* params, void* fixture) {
     return MUNIT_OK;
 }
 
+/* ---- test_file_open_close ---------------------------------------------- */
+
+#define TMP_FILEIO_PATH "/tmp/teide_test_fileio.dat"
+
+static MunitResult test_file_open_close(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+
+    /* Open for write+create, then close */
+    unlink(TMP_FILEIO_PATH);
+    td_fd_t fd = td_file_open(TMP_FILEIO_PATH, TD_OPEN_WRITE | TD_OPEN_CREATE);
+    munit_assert_int(fd, !=, TD_FD_INVALID);
+    td_file_close(fd);
+
+    /* Open for read (file now exists) */
+    fd = td_file_open(TMP_FILEIO_PATH, TD_OPEN_READ);
+    munit_assert_int(fd, !=, TD_FD_INVALID);
+    td_file_close(fd);
+
+    /* Open nonexistent for read (no create) → fail */
+    unlink(TMP_FILEIO_PATH);
+    fd = td_file_open(TMP_FILEIO_PATH, TD_OPEN_READ);
+    munit_assert_int(fd, ==, TD_FD_INVALID);
+
+    /* NULL path → fail */
+    fd = td_file_open(NULL, 0);
+    munit_assert_int(fd, ==, TD_FD_INVALID);
+
+    return MUNIT_OK;
+}
+
+/* ---- test_file_lock_unlock --------------------------------------------- */
+
+static MunitResult test_file_lock_unlock(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+
+    unlink(TMP_FILEIO_PATH);
+    td_fd_t fd = td_file_open(TMP_FILEIO_PATH, TD_OPEN_WRITE | TD_OPEN_CREATE);
+    munit_assert_int(fd, !=, TD_FD_INVALID);
+
+    /* Exclusive lock + unlock */
+    td_err_t err = td_file_lock_ex(fd);
+    munit_assert_int(err, ==, TD_OK);
+    err = td_file_unlock(fd);
+    munit_assert_int(err, ==, TD_OK);
+
+    /* Shared lock + unlock */
+    err = td_file_lock_sh(fd);
+    munit_assert_int(err, ==, TD_OK);
+    err = td_file_unlock(fd);
+    munit_assert_int(err, ==, TD_OK);
+
+    /* Invalid fd → error */
+    munit_assert_int(td_file_lock_ex(TD_FD_INVALID), ==, TD_ERR_IO);
+    munit_assert_int(td_file_lock_sh(TD_FD_INVALID), ==, TD_ERR_IO);
+    munit_assert_int(td_file_unlock(TD_FD_INVALID), ==, TD_ERR_IO);
+
+    td_file_close(fd);
+    unlink(TMP_FILEIO_PATH);
+    return MUNIT_OK;
+}
+
+/* ---- test_file_sync_op ------------------------------------------------- */
+
+static MunitResult test_file_sync_op(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+
+    unlink(TMP_FILEIO_PATH);
+    td_fd_t fd = td_file_open(TMP_FILEIO_PATH, TD_OPEN_WRITE | TD_OPEN_CREATE);
+    munit_assert_int(fd, !=, TD_FD_INVALID);
+
+    /* fsync on valid fd */
+    td_err_t err = td_file_sync(fd);
+    munit_assert_int(err, ==, TD_OK);
+
+    /* Invalid fd → error */
+    munit_assert_int(td_file_sync(TD_FD_INVALID), ==, TD_ERR_IO);
+
+    td_file_close(fd);
+    unlink(TMP_FILEIO_PATH);
+    return MUNIT_OK;
+}
+
+/* ---- test_file_rename_op ----------------------------------------------- */
+
+#define TMP_FILEIO_PATH2 "/tmp/teide_test_fileio2.dat"
+
+static MunitResult test_file_rename_op(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+
+    unlink(TMP_FILEIO_PATH);
+    unlink(TMP_FILEIO_PATH2);
+
+    /* Create source file */
+    td_fd_t fd = td_file_open(TMP_FILEIO_PATH, TD_OPEN_WRITE | TD_OPEN_CREATE);
+    munit_assert_int(fd, !=, TD_FD_INVALID);
+    td_file_close(fd);
+
+    /* Rename */
+    td_err_t err = td_file_rename(TMP_FILEIO_PATH, TMP_FILEIO_PATH2);
+    munit_assert_int(err, ==, TD_OK);
+
+    /* Old path should not exist, new should */
+    fd = td_file_open(TMP_FILEIO_PATH, TD_OPEN_READ);
+    munit_assert_int(fd, ==, TD_FD_INVALID);
+
+    fd = td_file_open(TMP_FILEIO_PATH2, TD_OPEN_READ);
+    munit_assert_int(fd, !=, TD_FD_INVALID);
+    td_file_close(fd);
+
+    /* Rename nonexistent → error */
+    err = td_file_rename("/tmp/teide_nonexistent_xyz", TMP_FILEIO_PATH2);
+    munit_assert_int(err, ==, TD_ERR_IO);
+
+    /* NULL args → error */
+    munit_assert_int(td_file_rename(NULL, TMP_FILEIO_PATH2), ==, TD_ERR_IO);
+    munit_assert_int(td_file_rename(TMP_FILEIO_PATH, NULL), ==, TD_ERR_IO);
+
+    unlink(TMP_FILEIO_PATH2);
+    return MUNIT_OK;
+}
+
+/* ---- test_file_shared_lock_concurrent ---------------------------------- */
+
+static MunitResult test_file_shared_lock_concurrent(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+
+    unlink(TMP_FILEIO_PATH);
+    td_fd_t fd1 = td_file_open(TMP_FILEIO_PATH, TD_OPEN_READ | TD_OPEN_WRITE | TD_OPEN_CREATE);
+    td_fd_t fd2 = td_file_open(TMP_FILEIO_PATH, TD_OPEN_READ);
+    munit_assert_int(fd1, !=, TD_FD_INVALID);
+    munit_assert_int(fd2, !=, TD_FD_INVALID);
+
+    /* Two shared locks should not conflict */
+    td_err_t err1 = td_file_lock_sh(fd1);
+    td_err_t err2 = td_file_lock_sh(fd2);
+    munit_assert_int(err1, ==, TD_OK);
+    munit_assert_int(err2, ==, TD_OK);
+
+    td_file_unlock(fd1);
+    td_file_unlock(fd2);
+    td_file_close(fd1);
+    td_file_close(fd2);
+    unlink(TMP_FILEIO_PATH);
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest store_tests[] = {
@@ -951,6 +1097,11 @@ static MunitTest store_tests[] = {
     { "/col_save_load_str",   test_col_save_load_str,   store_setup, store_teardown, 0, NULL },
     { "/col_save_load_list",  test_col_save_load_list,  store_setup, store_teardown, 0, NULL },
     { "/col_save_load_table", test_col_save_load_table, store_setup, store_teardown, 0, NULL },
+    { "/file_open_close",     test_file_open_close,     store_setup, store_teardown, 0, NULL },
+    { "/file_lock_unlock",    test_file_lock_unlock,    store_setup, store_teardown, 0, NULL },
+    { "/file_sync",           test_file_sync_op,        store_setup, store_teardown, 0, NULL },
+    { "/file_rename",         test_file_rename_op,      store_setup, store_teardown, 0, NULL },
+    { "/file_shared_lock",    test_file_shared_lock_concurrent, store_setup, store_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

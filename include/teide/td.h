@@ -973,6 +973,27 @@ td_t* td_execute(td_graph_t* g, td_op_t* root);
 
 /* ===== Storage API ===== */
 
+/* Cross-platform file I/O (locking, sync, atomic rename) */
+#ifdef _WIN32
+  typedef HANDLE td_fd_t;
+  #define TD_FD_INVALID INVALID_HANDLE_VALUE
+#else
+  typedef int td_fd_t;
+  #define TD_FD_INVALID (-1)
+#endif
+
+#define TD_OPEN_READ   0x01
+#define TD_OPEN_WRITE  0x02
+#define TD_OPEN_CREATE 0x04
+
+td_fd_t  td_file_open(const char* path, int flags);
+void     td_file_close(td_fd_t fd);
+td_err_t td_file_lock_ex(td_fd_t fd);
+td_err_t td_file_lock_sh(td_fd_t fd);
+td_err_t td_file_unlock(td_fd_t fd);
+td_err_t td_file_sync(td_fd_t fd);
+td_err_t td_file_rename(const char* old_path, const char* new_path);
+
 /* Column file I/O */
 td_err_t td_col_save(td_t* vec, const char* path);
 td_t*    td_col_load(const char* path);

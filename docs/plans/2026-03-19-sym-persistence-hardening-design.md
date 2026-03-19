@@ -171,6 +171,42 @@ Behavior:
 4. `splay.c` + `part.c` — depends on sym.c and col.c changes
 5. `td.h` API update + test updates — final integration
 
+## Tasks
+
+### Task 1: Cross-platform file I/O abstraction (fileio.{h,c})
+
+- [x] Create `src/store/fileio.h` with `td_fd_t`, `td_file_open`, `td_file_close`, `td_file_lock_ex`, `td_file_lock_sh`, `td_file_unlock`, `td_file_sync`, `td_file_rename`
+- [x] Create `src/store/fileio.c` with POSIX implementation (flock, fsync, rename) and Windows stubs
+- [x] Add `td_file_*` declarations to `include/teide/td.h`
+- [x] Add fileio.c to CMake build
+- [x] Write tests for file lock/sync/rename operations in `test/test_store.c`
+
+### Task 2: Sym save/load rewrite (sym.c td_t list format + append-only + locking)
+
+- [ ] Add `persisted_count` field to `sym_table_t` in `src/table/sym.h`
+- [ ] Rewrite `td_sym_save` in `src/table/sym.c`: build TD_LIST of TD_ATOM_STR, use td_col_save, file locking, fsync + atomic rename, append-only logic
+- [ ] Rewrite `td_sym_load` in `src/table/sym.c`: td_col_load, skip already-loaded entries, file locking
+- [ ] Delete old TSYM format code (magic 0x4D595354, length-prefixed entries)
+- [ ] Update `test/test_sym.c` with save/load roundtrip, append-only, corrupt file tests
+
+### Task 3: Column bounds validation + sym count metadata (col.c)
+
+- [ ] Add `validate_sym_bounds()` static helper in `src/store/col.c` — width-dispatched scan for max index
+- [ ] Call `validate_sym_bounds()` in `td_col_load` and `td_col_mmap` for TD_SYM columns
+- [ ] Store sym count metadata on save: `td_meta_set(col, TD_META_DICT, ...)` in `td_col_save` for TD_SYM columns
+- [ ] Validate sym count metadata on load: fast-reject if sym table too small
+- [ ] Write tests: out-of-range index rejection, sym count metadata mismatch
+
+### Task 4: Mandatory sym-before-data (splay.c + part.c + td.h API update)
+
+- [ ] Change `td_splay_load` signature to `td_splay_load(const char* dir, const char* sym_path)`
+- [ ] Implement: if sym_path provided, call `td_sym_load`; post-load check for TD_SYM columns with empty sym table
+- [ ] Make sym failure fatal in `td_read_splayed`
+- [ ] Update `td_part_load` to construct sym_path and pass to `td_splay_load`
+- [ ] Update `include/teide/td.h` with new `td_splay_load` signature
+- [ ] Update all call sites and tests for new signature
+- [ ] Write integration tests: splay load with/without sym, TD_SYM columns + missing sym
+
 ## Test Plan
 
 - Save sym as td_t list, load back, verify all strings match
