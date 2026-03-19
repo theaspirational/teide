@@ -603,7 +603,7 @@ td_err_t td_sym_load(const char* path) {
         return code;
     }
 
-    if (list->type != TD_LIST) {
+    if (list->type != TD_LIST || list->len > UINT32_MAX) {
         td_release(list);
         td_file_unlock(lock_fd);
         td_file_close(lock_fd);
