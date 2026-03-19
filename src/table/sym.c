@@ -27,6 +27,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdatomic.h>
+#include <errno.h>
 
 /* --------------------------------------------------------------------------
  * FNV-1a 32-bit hash
@@ -405,7 +406,9 @@ td_err_t td_sym_save(const char* path) {
     td_err_t err = td_file_lock_ex(lock_fd);
     if (err != TD_OK) { td_file_close(lock_fd); return err; }
 
-    /* If file exists, load and merge (pick up entries from other writers) */
+    /* If file exists, load and merge (pick up entries from other writers).
+     * Distinguish "file not found" (proceed with full save) from real I/O
+     * errors (abort to avoid overwriting a file we couldn't read). */
     {
         td_t* existing = td_col_load(path);
         if (existing && !TD_IS_ERR(existing)) {
@@ -415,7 +418,11 @@ td_err_t td_sym_save(const char* path) {
                 td_file_close(lock_fd);
                 return TD_ERR_CORRUPT;
             }
-            /* Intern any new entries from disk (idempotent) */
+            /* Intern any new entries from disk (idempotent).
+             * Verify each entry's in-memory ID matches its disk position:
+             * if a local symbol already occupies a slot that disk expects,
+             * the tables have diverged and merging would silently reorder
+             * symbol IDs, corrupting previously written TD_SYM columns. */
             td_t** slots = (td_t**)td_data(existing);
             for (int64_t i = 0; i < existing->len; i++) {
                 td_t* s = slots[i];
@@ -425,9 +432,47 @@ td_err_t td_sym_save(const char* path) {
                     td_file_close(lock_fd);
                     return TD_ERR_CORRUPT;
                 }
-                td_sym_intern(td_str_ptr(s), td_str_len(s));
+                int64_t id = td_sym_intern(td_str_ptr(s), td_str_len(s));
+                if (id < 0) {
+                    td_release(existing);
+                    td_file_unlock(lock_fd);
+                    td_file_close(lock_fd);
+                    return TD_ERR_OOM;
+                }
+                if (id != i) {
+                    /* Divergent symbol tables: disk position i maps to
+                     * in-memory id != i.  A local symbol occupies the
+                     * slot, so merging would reorder IDs and corrupt
+                     * any TD_SYM columns written by the other writer. */
+                    td_release(existing);
+                    td_file_unlock(lock_fd);
+                    td_file_close(lock_fd);
+                    return TD_ERR_CORRUPT;
+                }
             }
             td_release(existing);
+        } else {
+            /* td_col_load failed — check if the file actually exists.
+             * If it does, the failure is a real I/O/corruption error;
+             * do not overwrite the file with a potentially incomplete
+             * in-memory snapshot. */
+            FILE* probe = fopen(path, "rb");
+            if (probe) {
+                /* File exists and is readable but td_col_load failed —
+                 * corruption or format error; do not overwrite. */
+                fclose(probe);
+                td_file_unlock(lock_fd);
+                td_file_close(lock_fd);
+                return TD_IS_ERR(existing) ? TD_ERR_CODE(existing) : TD_ERR_IO;
+            }
+            if (errno != ENOENT) {
+                /* File may exist but we can't open it (EACCES, EMFILE,
+                 * EIO, etc.) — do not overwrite, report I/O error. */
+                td_file_unlock(lock_fd);
+                td_file_close(lock_fd);
+                return TD_ERR_IO;
+            }
+            /* File does not exist (ENOENT) — proceed with full save */
         }
     }
 
@@ -492,6 +537,15 @@ td_err_t td_sym_save(const char* path) {
         return err;
     }
 
+    /* Fsync parent directory so the new directory entry is durable.
+     * Without this, a crash after rename can lose the new file. */
+    err = td_file_sync_dir(path);
+    if (err != TD_OK) {
+        td_file_unlock(lock_fd);
+        td_file_close(lock_fd);
+        return err;
+    }
+
     /* Update persisted count */
     sym_lock();
     g_sym.persisted_count = count;
@@ -513,14 +567,32 @@ td_err_t td_sym_load(const char* path) {
     if (!path) return TD_ERR_IO;
     if (!atomic_load_explicit(&g_sym_inited, memory_order_acquire)) return TD_ERR_IO;
 
-    /* Acquire cross-process shared lock */
+    /* Acquire cross-process shared lock.
+     * Try read-only open first so that read-only users (snapshots, read-only
+     * mounts) can load without write permission on the directory.  Fall back
+     * to read-write+create if the lock file doesn't exist yet.  If both fail,
+     * only proceed without locking on read-only filesystem (EROFS) — other
+     * errors (EMFILE, ENFILE, EACCES on writable fs, etc.) are real failures
+     * that would silently drop the shared-lock guarantee. */
     char lock_path[1024];
     if (snprintf(lock_path, sizeof(lock_path), "%s.lk", path) >= (int)sizeof(lock_path))
         return TD_ERR_IO;
-    td_fd_t lock_fd = td_file_open(lock_path, TD_OPEN_READ | TD_OPEN_WRITE | TD_OPEN_CREATE);
-    if (lock_fd == TD_FD_INVALID) return TD_ERR_IO;
-    td_err_t err = td_file_lock_sh(lock_fd);
-    if (err != TD_OK) { td_file_close(lock_fd); return err; }
+    td_fd_t lock_fd = td_file_open(lock_path, TD_OPEN_READ);
+    if (lock_fd == TD_FD_INVALID) {
+        int saved_errno = errno;
+        lock_fd = td_file_open(lock_path, TD_OPEN_READ | TD_OPEN_WRITE | TD_OPEN_CREATE);
+        if (lock_fd == TD_FD_INVALID) {
+            /* Only proceed unlocked on read-only filesystem (EROFS) where
+             * concurrent writes are impossible.  All other failures are
+             * real errors that should not be silently ignored. */
+            if (saved_errno != EROFS && errno != EROFS)
+                return TD_ERR_IO;
+        }
+    }
+    if (lock_fd != TD_FD_INVALID) {
+        td_err_t err = td_file_lock_sh(lock_fd);
+        if (err != TD_OK) { td_file_close(lock_fd); return err; }
+    }
 
     /* Load the sym file as a TD_LIST of TD_ATOM_STR */
     td_t* list = td_col_load(path);
@@ -538,11 +610,26 @@ td_err_t td_sym_load(const char* path) {
         return TD_ERR_CORRUPT;
     }
 
-    /* Validate existing entries match, then intern remaining */
-    uint32_t already = td_sym_count();
+    /* Validate existing entries match, then intern remaining.
+     * Use persisted_count (not str_count) as the already-loaded prefix:
+     * runtime code may td_sym_intern transient names that were never
+     * persisted, and those must not participate in prefix validation
+     * or affect the intern start offset. */
+    sym_lock();
+    uint32_t already = g_sym.persisted_count;
+    sym_unlock();
     td_t** slots = (td_t**)td_data(list);
 
-    /* Validate entries [0..already-1] match what's in memory */
+    /* Reject stale/truncated sym file: if disk has fewer entries than what
+     * we previously loaded from disk, the file is outdated or truncated. */
+    if (already > 0 && list->len < (int64_t)already) {
+        td_release(list);
+        td_file_unlock(lock_fd);
+        td_file_close(lock_fd);
+        return TD_ERR_CORRUPT;
+    }
+
+    /* Validate entries [0..already-1] match the persisted prefix */
     for (int64_t i = 0; i < (int64_t)already && i < list->len; i++) {
         td_t* s = slots[i];
         if (!s || TD_IS_ERR(s) || s->type != TD_ATOM_STR) {
@@ -561,7 +648,11 @@ td_err_t td_sym_load(const char* path) {
         }
     }
 
-    /* Intern entries beyond what's already in memory */
+    /* Intern entries beyond what's already in memory.
+     * Verify each entry's in-memory ID matches its disk position:
+     * if transient runtime-interned symbols already occupy these
+     * slots, the disk entries would get wrong IDs, causing TD_SYM
+     * columns to resolve the wrong strings. */
     for (int64_t i = (int64_t)already; i < list->len; i++) {
         td_t* s = slots[i];
         if (!s || TD_IS_ERR(s) || s->type != TD_ATOM_STR) {
@@ -577,11 +668,23 @@ td_err_t td_sym_load(const char* path) {
             td_file_close(lock_fd);
             return TD_ERR_OOM;
         }
+        if (id != i) {
+            /* ID mismatch: disk position i was assigned in-memory
+             * id != i, meaning a transient symbol occupies the slot.
+             * The sym table has diverged from disk; continuing would
+             * cause TD_SYM columns to resolve wrong strings. */
+            td_release(list);
+            td_file_unlock(lock_fd);
+            td_file_close(lock_fd);
+            return TD_ERR_CORRUPT;
+        }
     }
 
-    /* Update persisted count to reflect loaded state */
+    /* Update persisted count to reflect what is actually on disk.
+     * Use list->len (not str_count) because transient runtime-interned
+     * symbols may exist beyond the persisted prefix. */
     sym_lock();
-    g_sym.persisted_count = g_sym.str_count;
+    g_sym.persisted_count = (uint32_t)list->len;
     sym_unlock();
 
     td_release(list);

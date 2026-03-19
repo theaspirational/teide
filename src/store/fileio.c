@@ -25,7 +25,24 @@
 
 #ifdef _WIN32
 
+#include <errno.h>
+
 /* ===== Windows implementation ===== */
+
+/* Translate GetLastError() into errno so callers can use errno portably. */
+static void win_set_errno(void) {
+    DWORD e = GetLastError();
+    switch (e) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:    errno = ENOENT;  break;
+    case ERROR_ACCESS_DENIED:     errno = EACCES;  break;
+    case ERROR_WRITE_PROTECT:     errno = EROFS;   break;
+    case ERROR_TOO_MANY_OPEN_FILES: errno = EMFILE; break;
+    case ERROR_FILE_EXISTS:
+    case ERROR_ALREADY_EXISTS:    errno = EEXIST;  break;
+    default:                      errno = EIO;     break;
+    }
+}
 
 td_fd_t td_file_open(const char* path, int flags) {
     if (!path) return TD_FD_INVALID;
@@ -37,8 +54,10 @@ td_fd_t td_file_open(const char* path, int flags) {
     if (flags & TD_OPEN_WRITE) access |= GENERIC_WRITE;
     if (flags & TD_OPEN_CREATE) creation = OPEN_ALWAYS;
 
-    return CreateFileA(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                       NULL, creation, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE h = CreateFileA(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           NULL, creation, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) win_set_errno();
+    return h;
 }
 
 void td_file_close(td_fd_t fd) {
@@ -75,9 +94,19 @@ td_err_t td_file_sync(td_fd_t fd) {
     return TD_OK;
 }
 
+td_err_t td_file_sync_dir(const char* path) {
+    /* Windows: rename durability is handled by MOVEFILE_WRITE_THROUGH in
+     * td_file_rename; no separate directory fsync needed. */
+    (void)path;
+    return TD_OK;
+}
+
 td_err_t td_file_rename(const char* old_path, const char* new_path) {
     if (!old_path || !new_path) return TD_ERR_IO;
-    if (!MoveFileExA(old_path, new_path, MOVEFILE_REPLACE_EXISTING))
+    /* MOVEFILE_WRITE_THROUGH flushes the rename to disk before returning,
+     * providing crash-safe durability equivalent to POSIX fsync-after-rename. */
+    if (!MoveFileExA(old_path, new_path,
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         return TD_ERR_IO;
     return TD_OK;
 }
@@ -90,6 +119,7 @@ td_err_t td_file_rename(const char* old_path, const char* new_path) {
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <string.h>
 
 td_fd_t td_file_open(const char* path, int flags) {
     if (!path) return TD_FD_INVALID;
@@ -133,6 +163,30 @@ td_err_t td_file_sync(td_fd_t fd) {
     if (fd == TD_FD_INVALID) return TD_ERR_IO;
     if (fsync(fd) != 0) return TD_ERR_IO;
     return TD_OK;
+}
+
+td_err_t td_file_sync_dir(const char* path) {
+    if (!path) return TD_ERR_IO;
+    /* Extract parent directory from path */
+    char dir[1024];
+    size_t len = strlen(path);
+    if (len >= sizeof(dir)) return TD_ERR_IO;
+    memcpy(dir, path, len + 1);
+    /* Find last '/' */
+    char* slash = strrchr(dir, '/');
+    if (slash) {
+        if (slash == dir)
+            dir[1] = '\0';  /* root directory */
+        else
+            *slash = '\0';
+    } else {
+        dir[0] = '.'; dir[1] = '\0';  /* current directory */
+    }
+    int fd = open(dir, O_RDONLY);
+    if (fd < 0) return TD_ERR_IO;
+    int rc = fsync(fd);
+    close(fd);
+    return (rc == 0) ? TD_OK : TD_ERR_IO;
 }
 
 td_err_t td_file_rename(const char* old_path, const char* new_path) {

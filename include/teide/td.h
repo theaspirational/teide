@@ -992,6 +992,7 @@ td_err_t td_file_lock_ex(td_fd_t fd);
 td_err_t td_file_lock_sh(td_fd_t fd);
 td_err_t td_file_unlock(td_fd_t fd);
 td_err_t td_file_sync(td_fd_t fd);
+td_err_t td_file_sync_dir(const char* path);
 td_err_t td_file_rename(const char* old_path, const char* new_path);
 
 /* Column file I/O */

@@ -149,16 +149,26 @@ td_t* td_splay_load(const char* dir, const char* sym_path) {
     for (int64_t c = 0; c < ncols; c++) {
         int64_t name_id = name_ids[c];
         td_t* name_atom = td_sym_str(name_id);
-        if (!name_atom) continue;
+        if (!name_atom) {
+            /* Schema references a sym ID that doesn't exist — sym table
+             * is stale or wrong for this data. */
+            td_release(schema);
+            td_release(tbl);
+            return TD_ERR_PTR(TD_ERR_CORRUPT);
+        }
 
         const char* name = td_str_ptr(name_atom);
         size_t name_len = td_str_len(name_atom);
 
-        /* Reject names with path separators, traversal, or starting with '.' */
+        /* Reject names with path separators, traversal, or starting with '.'
+         * — these indicate a stale/wrong sym file, not a column to skip. */
         if (name_len == 0 || name[0] == '.' ||
             memchr(name, '/', name_len) || memchr(name, '\\', name_len) ||
-            memchr(name, '\0', name_len))
-            continue;
+            memchr(name, '\0', name_len)) {
+            td_release(schema);
+            td_release(tbl);
+            return TD_ERR_PTR(TD_ERR_CORRUPT);
+        }
 
         path_len = snprintf(path, sizeof(path), "%s/%.*s", dir, (int)name_len, name);
         if (path_len < 0 || (size_t)path_len >= sizeof(path)) {
@@ -233,15 +243,22 @@ td_t* td_read_splayed(const char* dir, const char* sym_path) {
     for (int64_t c = 0; c < ncols; c++) {
         int64_t name_id = name_ids[c];
         td_t* name_atom = td_sym_str(name_id);
-        if (!name_atom) continue;
+        if (!name_atom) {
+            td_release(schema);
+            td_release(tbl);
+            return TD_ERR_PTR(TD_ERR_CORRUPT);
+        }
 
         const char* name = td_str_ptr(name_atom);
         size_t name_len = td_str_len(name_atom);
 
         if (name_len == 0 || name[0] == '.' ||
             memchr(name, '/', name_len) || memchr(name, '\\', name_len) ||
-            memchr(name, '\0', name_len))
-            continue;
+            memchr(name, '\0', name_len)) {
+            td_release(schema);
+            td_release(tbl);
+            return TD_ERR_PTR(TD_ERR_CORRUPT);
+        }
 
         path_len = snprintf(path, sizeof(path), "%s/%.*s", dir, (int)name_len, name);
         if (path_len < 0 || (size_t)path_len >= sizeof(path)) {
