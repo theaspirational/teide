@@ -240,6 +240,65 @@ int64_t td_sym_intern(const char* str, size_t len) {
 }
 
 /* --------------------------------------------------------------------------
+ * td_sym_intern_prehashed -- intern with pre-computed hash, no lock.
+ *
+ * CALLER CONTRACT: must only be called when no other thread is interning
+ * (e.g., after td_pool_dispatch returns during CSV merge).
+ * -------------------------------------------------------------------------- */
+
+int64_t td_sym_intern_prehashed(uint32_t hash, const char* str, size_t len) {
+    if (!atomic_load_explicit(&g_sym_inited, memory_order_acquire)) return -1;
+
+    uint32_t mask = g_sym.bucket_cap - 1;
+    uint32_t slot = hash & mask;
+
+    for (;;) {
+        uint64_t e = g_sym.buckets[slot];
+        if (e == 0) break;
+
+        uint32_t e_hash = (uint32_t)(e >> 32);
+        if (e_hash == hash) {
+            uint32_t e_id = (uint32_t)(e & 0xFFFFFFFF) - 1;
+            td_t* existing = g_sym.strings[e_id];
+            if (td_str_len(existing) == len &&
+                memcmp(td_str_ptr(existing), str, len) == 0) {
+                return (int64_t)e_id;
+            }
+        }
+        slot = (slot + 1) & mask;
+    }
+
+    if ((uint64_t)g_sym.str_count * 100 >= (uint64_t)g_sym.bucket_cap * 70) {
+        if (!ht_grow()) {
+            if ((uint64_t)g_sym.str_count * 100 >= (uint64_t)g_sym.bucket_cap * 95) {
+                return -1;
+            }
+        }
+    }
+
+    uint32_t new_id = g_sym.str_count;
+
+    if (new_id >= g_sym.str_cap) {
+        if (g_sym.str_cap >= UINT32_MAX / 2) return -1;
+        uint32_t new_str_cap = g_sym.str_cap * 2;
+        td_t** new_strings = (td_t**)td_sys_realloc(g_sym.strings,
+                                                    (size_t)new_str_cap * sizeof(td_t*));
+        if (!new_strings) return -1;
+        g_sym.strings = new_strings;
+        g_sym.str_cap = new_str_cap;
+    }
+
+    td_t* s = td_str(str, len);
+    if (!s || TD_IS_ERR(s)) return -1;
+    g_sym.strings[new_id] = s;
+    g_sym.str_count++;
+
+    ht_insert(g_sym.buckets, g_sym.bucket_cap, hash, new_id);
+
+    return (int64_t)new_id;
+}
+
+/* --------------------------------------------------------------------------
  * td_sym_find
  * -------------------------------------------------------------------------- */
 
