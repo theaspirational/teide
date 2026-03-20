@@ -242,6 +242,17 @@ static MunitResult test_arena_sym_intern(const void* params, void* data) {
     munit_assert_int(td_str_len(found), ==, 7);
     munit_assert_memory_equal(7, td_str_ptr(found), "sym_999");
 
+    /* Verify long strings (>=7 bytes) use the arena CHAR vector path */
+    const char* long_str = "this_is_a_long_symbol_name_for_testing";
+    size_t long_len = strlen(long_str);
+    int64_t long_id = td_sym_intern(long_str, long_len);
+    munit_assert_int(long_id, >=, 0);
+    td_t* long_s = td_sym_str(long_id);
+    munit_assert_ptr_not_null(long_s);
+    munit_assert_true(long_s->attrs & TD_ATTR_ARENA);
+    munit_assert_int(td_str_len(long_s), ==, (int64_t)long_len);
+    munit_assert_memory_equal(long_len, td_str_ptr(long_s), long_str);
+
     td_sym_destroy();
     td_heap_destroy();
     return MUNIT_OK;
