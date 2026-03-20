@@ -28,19 +28,7 @@
 #include <stdio.h>
 #include <stdatomic.h>
 #include <errno.h>
-
-/* --------------------------------------------------------------------------
- * FNV-1a 32-bit hash
- * -------------------------------------------------------------------------- */
-
-static uint32_t fnv1a(const char* data, size_t len) {
-    uint32_t h = 0x811c9dc5u;
-    for (size_t i = 0; i < len; i++) {
-        h ^= (uint8_t)data[i];
-        h *= 0x01000193u;
-    }
-    return h;
-}
+#include "ops/hash.h"
 
 /* --------------------------------------------------------------------------
  * Symbol table structure (static global, sequential mode only).
@@ -185,7 +173,7 @@ int64_t td_sym_intern(const char* str, size_t len) {
 
     sym_lock();
 
-    uint32_t hash = fnv1a(str, len);
+    uint32_t hash = (uint32_t)td_hash_bytes(str, len);
     uint32_t mask = g_sym.bucket_cap - 1;
     uint32_t slot = hash & mask;
 
@@ -262,7 +250,7 @@ int64_t td_sym_find(const char* str, size_t len) {
      * frees and replaces g_sym.buckets -- reading without lock is UAF. */
     sym_lock();
 
-    uint32_t hash = fnv1a(str, len);
+    uint32_t hash = (uint32_t)td_hash_bytes(str, len);
     uint32_t mask = g_sym.bucket_cap - 1;
     uint32_t slot = hash & mask;
 

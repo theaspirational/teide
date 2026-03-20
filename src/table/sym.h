@@ -27,7 +27,7 @@
 /*
  * sym.h -- Global symbol intern table.
  *
- * Sequential mode: simple hash map + array. FNV-1a 32-bit hashing,
+ * Sequential mode: simple hash map + array. wyhash (truncated to 32-bit),
  * open addressing with linear probing. Stores (hash32 << 32) | (id + 1)
  * so that 0 means empty bucket.
  */
