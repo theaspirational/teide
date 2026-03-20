@@ -651,7 +651,7 @@ git commit -m "feat: wire arena allocator into sym table — 20M td_alloc calls 
 
 ---
 
-### Task 5: Benchmark and Verify Performance
+### Task 5: Benchmark and Verify Performance [x]
 
 **Files:** None (verification only)
 
