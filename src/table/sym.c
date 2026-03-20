@@ -85,17 +85,23 @@ static td_t* sym_str_arena(td_arena_t* arena, const char* s, size_t len) {
         v->sdata[len] = '\0';
         return v;
     }
-    /* Long string: CHAR vector + header, both from arena */
+    /* Long string: fused single allocation for CHAR vector + STR header.
+     * Layout: [CHAR td_t header (32B) | string data (len+1) | padding | STR td_t header (32B)]
+     * This halves arena_alloc calls for long strings. */
     size_t data_size = len + 1;
-    td_t* chars = td_arena_alloc(arena, data_size);
+    size_t chars_block = ((32 + data_size) + 31) & ~(size_t)31;  /* align up to 32 */
+    td_t* chars = td_arena_alloc(arena, chars_block + 32 - 32);  /* chars_block - 32 (header) + 32 (str header) */
     if (!chars) return NULL;
     chars->type = TD_CHAR;
     chars->len = (int64_t)len;
     memcpy(td_data(chars), s, len);
     ((char*)td_data(chars))[len] = '\0';
 
-    td_t* v = td_arena_alloc(arena, 0);
-    if (!v) return NULL;
+    /* STR header sits right after the CHAR block */
+    td_t* v = (td_t*)((char*)chars + chars_block);
+    memset(v, 0, 32);
+    v->attrs = TD_ATTR_ARENA;
+    atomic_store_explicit(&v->rc, 1, memory_order_relaxed);
     v->type = TD_ATOM_STR;
     v->obj = chars;
     return v;

@@ -949,8 +949,10 @@ static bool merge_local_syms(local_sym_t* local_syms, uint32_t n_workers,
             if (!mappings[w]) continue;
             mapping_counts[w] = ls->count;
             for (uint32_t i = 0; i < ls->count; i++) {
-                mappings[w][i] = td_sym_intern(
-                    ls->arena + ls->offsets[i], ls->lens[i]);
+                const char* str = ls->arena + ls->offsets[i];
+                size_t slen = ls->lens[i];
+                uint32_t hash = (uint32_t)td_hash_bytes(str, slen);
+                mappings[w][i] = td_sym_intern_prehashed(hash, str, slen);
                 if (mappings[w][i] < 0) { ok = false; mappings[w][i] = 0; }
             }
         }
