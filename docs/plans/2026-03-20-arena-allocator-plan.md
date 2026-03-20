@@ -744,7 +744,7 @@ rm /tmp/teide_10m.csv /tmp/bench_arena /tmp/bench_arena.c
 
 ---
 
-### Task 6: Run Full Regression Suite
+### Task 6: Run Full Regression Suite [x]
 
 **Files:** None (verification only)
 
