@@ -475,7 +475,7 @@ git commit -m "feat: arena allocator — bump allocator with linked chunks, rese
 
 ---
 
-### Task 4: Wire Arena Into Sym Table
+### Task 4: Wire Arena Into Sym Table [x]
 
 **Files:**
 - Modify: `src/table/sym.c:24-31,41-53,75-99,105-118,226-230,289-294`

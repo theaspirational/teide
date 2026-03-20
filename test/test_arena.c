@@ -25,6 +25,7 @@
 #include <teide/td.h>
 #include "mem/arena.h"
 #include <string.h>
+#include <stdio.h>
 
 static MunitResult test_arena_release_noop(const void* params, void* data) {
     (void)params; (void)data;
@@ -146,12 +147,43 @@ static MunitResult test_arena_oversize(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+static MunitResult test_arena_sym_intern(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    /* Intern many strings — should use arena, not buddy allocator */
+    for (int i = 0; i < 10000; i++) {
+        char buf[32];
+        int len = snprintf(buf, sizeof(buf), "sym_%d", i);
+        int64_t id = td_sym_intern(buf, (size_t)len);
+        munit_assert_int(id, >=, 0);
+    }
+
+    /* Verify strings are accessible */
+    td_t* s = td_sym_str(0);
+    munit_assert_ptr_not_null(s);
+    munit_assert_true(s->attrs & TD_ATTR_ARENA);
+
+    /* Verify roundtrip */
+    int64_t id = td_sym_find("sym_999", 7);
+    munit_assert_int(id, >=, 0);
+    td_t* found = td_sym_str(id);
+    munit_assert_int(td_str_len(found), ==, 7);
+    munit_assert_memory_equal(7, td_str_ptr(found), "sym_999");
+
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 static MunitTest arena_tests[] = {
     { "/release_noop",         test_arena_release_noop,         NULL, NULL, 0, NULL },
     { "/alloc_basic",          test_arena_alloc_basic,          NULL, NULL, 0, NULL },
     { "/grows_across_chunks",  test_arena_grows_across_chunks,  NULL, NULL, 0, NULL },
     { "/reset",                test_arena_reset,                NULL, NULL, 0, NULL },
     { "/oversize",             test_arena_oversize,             NULL, NULL, 0, NULL },
+    { "/sym_intern",           test_arena_sym_intern,           NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 
