@@ -444,7 +444,9 @@ bool td_sym_ensure_cap(uint32_t needed) {
     }
 
     /* Grow hash table so load factor stays below threshold after filling */
-    uint32_t needed_buckets = (uint32_t)((double)needed / SYM_LOAD_FACTOR) + 1;
+    double raw_buckets = (double)needed / SYM_LOAD_FACTOR + 1.0;
+    if (raw_buckets > (double)UINT32_MAX) { sym_unlock(); return false; }
+    uint32_t needed_buckets = (uint32_t)raw_buckets;
     /* Round up to power of 2 */
     needed_buckets--;
     needed_buckets |= needed_buckets >> 1;

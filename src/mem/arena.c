@@ -50,6 +50,7 @@ static inline char* chunk_data(td_arena_chunk_t* c) {
 
 static td_arena_chunk_t* arena_new_chunk(size_t min_cap) {
     size_t hdr = ARENA_ALIGN_UP(sizeof(td_arena_chunk_t));
+    if (min_cap > SIZE_MAX - hdr) return NULL;
     size_t total = hdr + min_cap;
     td_arena_chunk_t* c = (td_arena_chunk_t*)td_sys_alloc(total);
     if (!c) return NULL;
@@ -110,7 +111,7 @@ td_t* td_arena_alloc(td_arena_t* arena, size_t nbytes) {
 void td_arena_reset(td_arena_t* arena) {
     if (!arena || !arena->chunks) return;
 
-    /* Keep the first chunk, free the rest */
+    /* Keep the head chunk (most recently allocated), free the rest */
     td_arena_chunk_t* keep = arena->chunks;
     td_arena_chunk_t* c = keep->next;
     while (c) {
