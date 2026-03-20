@@ -38,7 +38,7 @@ git commit -m "feat: add TD_ATTR_ARENA flag (0x80) for arena-allocated blocks"
 
 ---
 
-### Task 2: Add Arena Early-Out in `td_release` and `td_retain`
+### Task 2: Add Arena Early-Out in `td_release` and `td_retain` [x]
 
 **Files:**
 - Modify: `src/mem/cow.c:31-47`
