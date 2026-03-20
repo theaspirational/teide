@@ -144,7 +144,7 @@ git commit -m "feat: td_release/td_retain no-op for TD_ATTR_ARENA blocks"
 
 ---
 
-### Task 3: Implement Arena Allocator Core
+### Task 3: Implement Arena Allocator Core [x]
 
 **Files:**
 - Create: `src/mem/arena.h`
