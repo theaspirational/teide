@@ -54,6 +54,7 @@ void td_release(td_t* v) {
 
 td_t* td_cow(td_t* v) {
     if (!v || TD_IS_ERR(v)) return v;
+    if (v->attrs & TD_ATTR_ARENA) return v;  /* arena-owned, no-op */
     /* Caller must hold exclusive logical ownership — no concurrent
        td_retain/td_release allowed. The acquire load ensures visibility
        of prior writes by threads that have released their reference. */

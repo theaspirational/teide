@@ -24,7 +24,7 @@ cd build && ctest --output-on-failure
 
 Core abstraction is `td_t` — a 32-byte block header. Every object (atom, vector, list, table) is a `td_t` with data following at byte 32.
 
-**Memory**: buddy allocator with thread-local arenas, slab cache for small allocations, COW ref counting.
+**Memory**: buddy allocator with thread-local arenas, slab cache for small allocations, COW ref counting. Arena (bump) allocator (`td_arena_t`) for bulk short-lived allocations — blocks carry `TD_ATTR_ARENA` flag, making retain/release no-ops; entire arena freed at once.
 
 **Execution pipeline**:
 1. Build lazy DAG: `td_graph_new(df)` → `td_scan/td_add/td_filter/...` → `td_execute(g, root)`
@@ -45,7 +45,7 @@ Core abstraction is `td_t` — a 32-byte block header. Every object (atom, vecto
 - **Morsel-only processing**: all vector loops chunk through `td_morsel_t` (1024 elements)
 - **Error returns**: `td_t*` functions use `TD_ERR_PTR()` / `TD_IS_ERR()`; other functions return `td_err_t`
 - **No external deps**: pure C17, single public header `include/teide/td.h`
-- **No system allocator**: never use `malloc`/`calloc`/`realloc`/`free`. Use `td_alloc()`/`td_free()`.
+- **No system allocator**: never use `malloc`/`calloc`/`realloc`/`free`. Use `td_alloc()`/`td_free()` for general allocation, `td_arena_alloc()` for bulk short-lived blocks. `td_sys_alloc`/`td_sys_free` reserved for allocator internals only.
 - **SIMD first**: performance work must prefer SIMD approaches. Profile before optimizing, benchmark after.
 
 ## Key File Paths
@@ -59,7 +59,9 @@ src/ops/opt.c               Optimizer passes (type inference, SIP, factorize, pr
 src/ops/lftj.{h,c}         Leapfrog Triejoin — iterator, search, enumeration
 src/ops/fvec.{h,c}         Factorized vectors — td_fvec_t, td_ftable_t
 src/store/fileio.{h,c}     Cross-platform file I/O — locking (flock/LockFileEx), fsync, atomic rename
-src/table/sym.{h,c}        Global sym intern table — save/load, append-only persistence, file locking
+src/table/sym.{h,c}        Global sym intern table — arena-backed string atoms, save/load, append-only persistence, file locking
+src/mem/arena.{h,c}        Arena (bump) allocator — td_arena_t, bulk alloc for sym table
+test/test_arena.c           Arena allocator tests (alloc, reset, destroy, sym integration)
 test/test_csr.c             Graph engine tests (42 tests)
 test/test_opt.c             Optimizer pass tests (filter reorder, predicate pushdown)
 test/test_store.c           Storage tests (file I/O, sym persistence, col bounds validation)

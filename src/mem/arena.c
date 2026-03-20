@@ -24,7 +24,6 @@
 #include "arena.h"
 #include "sys.h"
 #include <string.h>
-#include <stdatomic.h>
 
 /* 32-byte alignment for td_t */
 #define ARENA_ALIGN 32
@@ -39,8 +38,7 @@ typedef struct td_arena_chunk {
 
 /* Arena header */
 struct td_arena {
-    td_arena_chunk_t* head;       /* current chunk (allocate from here) */
-    td_arena_chunk_t* chunks;     /* linked list of all chunks (for reset/destroy) */
+    td_arena_chunk_t* chunks;     /* linked list of all chunks (head = current) */
     size_t            chunk_size; /* default chunk capacity */
 };
 
@@ -74,16 +72,17 @@ td_arena_t* td_arena_new(size_t chunk_size) {
         return NULL;
     }
 
-    a->head = first;
     a->chunks = first;
     a->chunk_size = chunk_size;
     return a;
 }
 
 td_t* td_arena_alloc(td_arena_t* arena, size_t nbytes) {
+    if (!arena) return NULL;
+    if (nbytes > SIZE_MAX - 32 - (ARENA_ALIGN - 1)) return NULL;
     size_t block_size = ARENA_ALIGN_UP(32 + nbytes);
 
-    td_arena_chunk_t* c = arena->head;
+    td_arena_chunk_t* c = arena->chunks;
 
     if (c->used + block_size > c->cap) {
         size_t new_cap = arena->chunk_size;
@@ -94,7 +93,6 @@ td_t* td_arena_alloc(td_arena_t* arena, size_t nbytes) {
 
         nc->next = arena->chunks;
         arena->chunks = nc;
-        arena->head = nc;
         c = nc;
     }
 
@@ -104,32 +102,24 @@ td_t* td_arena_alloc(td_arena_t* arena, size_t nbytes) {
 
     memset(v, 0, 32);
     v->attrs = TD_ATTR_ARENA;
-    atomic_store_explicit(&v->rc, 1, memory_order_relaxed);
+    v->rc = 1;
 
     return v;
 }
 
 void td_arena_reset(td_arena_t* arena) {
-    /* Find the tail (first allocated chunk) */
-    td_arena_chunk_t* c = arena->chunks;
-    td_arena_chunk_t* first_allocated = NULL;
-    while (c) {
-        if (!c->next) { first_allocated = c; break; }
-        c = c->next;
-    }
+    if (!arena || !arena->chunks) return;
 
-    /* Free everything except first_allocated */
-    c = arena->chunks;
-    while (c != first_allocated) {
+    /* Free all chunks, then allocate a fresh one */
+    td_arena_chunk_t* c = arena->chunks;
+    while (c) {
         td_arena_chunk_t* next = c->next;
         td_sys_free(c);
         c = next;
     }
 
-    first_allocated->used = 0;
-    first_allocated->next = NULL;
-    arena->head = first_allocated;
-    arena->chunks = first_allocated;
+    td_arena_chunk_t* fresh = arena_new_chunk(arena->chunk_size);
+    arena->chunks = fresh;
 }
 
 void td_arena_destroy(td_arena_t* arena) {

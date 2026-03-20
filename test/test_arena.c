@@ -118,11 +118,10 @@ static MunitResult test_arena_reset(const void* params, void* data) {
 
     td_arena_reset(arena);
 
-    /* After reset, next alloc may reuse the same memory */
+    /* After reset, arena should be usable with a fresh chunk */
     td_t* v2 = td_arena_alloc(arena, 0);
     munit_assert_ptr_not_null(v2);
-    /* v2 should be at the start of the first chunk (same as v1 was) */
-    munit_assert_ptr_equal(v1, v2);
+    munit_assert_true(v2->attrs & TD_ATTR_ARENA);
 
     td_arena_destroy(arena);
     td_heap_destroy();
@@ -141,6 +140,77 @@ static MunitResult test_arena_oversize(const void* params, void* data) {
     munit_assert_false(TD_IS_ERR(v));
     munit_assert_true(v->attrs & TD_ATTR_ARENA);
     memset(td_data(v), 0xCD, 1024);
+
+    td_arena_destroy(arena);
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+static MunitResult test_arena_destroy_null(const void* params, void* data) {
+    (void)params; (void)data;
+    /* Must not crash */
+    td_arena_destroy(NULL);
+    return MUNIT_OK;
+}
+
+static MunitResult test_arena_reset_multi_chunk(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+
+    /* Tiny chunk to force multiple chunks */
+    td_arena_t* arena = td_arena_new(256);
+    munit_assert_ptr_not_null(arena);
+
+    /* Allocate enough to span several chunks */
+    for (int i = 0; i < 50; i++) {
+        td_t* v = td_arena_alloc(arena, 64);
+        munit_assert_ptr_not_null(v);
+    }
+
+    /* Reset should free extra chunks */
+    td_arena_reset(arena);
+
+    /* Arena should still be usable after reset */
+    td_t* v = td_arena_alloc(arena, 64);
+    munit_assert_ptr_not_null(v);
+    munit_assert_true(v->attrs & TD_ATTR_ARENA);
+    memset(td_data(v), 0xAB, 64);
+    munit_assert_uint(((uint8_t*)td_data(v))[0], ==, 0xAB);
+
+    td_arena_destroy(arena);
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+static MunitResult test_arena_retain_noop(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+
+    td_arena_t* arena = td_arena_new(4096);
+    td_t* v = td_arena_alloc(arena, 0);
+    munit_assert_ptr_not_null(v);
+    munit_assert_uint(v->rc, ==, 1);
+
+    /* td_retain should be a no-op for arena blocks */
+    td_retain(v);
+    munit_assert_uint(v->rc, ==, 1);
+
+    td_arena_destroy(arena);
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+static MunitResult test_arena_cow_noop(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+
+    td_arena_t* arena = td_arena_new(4096);
+    td_t* v = td_arena_alloc(arena, 0);
+    munit_assert_ptr_not_null(v);
+
+    /* td_cow should return same pointer for arena blocks */
+    td_t* cow_result = td_cow(v);
+    munit_assert_ptr_equal(v, cow_result);
 
     td_arena_destroy(arena);
     td_heap_destroy();
@@ -183,6 +253,10 @@ static MunitTest arena_tests[] = {
     { "/grows_across_chunks",  test_arena_grows_across_chunks,  NULL, NULL, 0, NULL },
     { "/reset",                test_arena_reset,                NULL, NULL, 0, NULL },
     { "/oversize",             test_arena_oversize,             NULL, NULL, 0, NULL },
+    { "/destroy_null",         test_arena_destroy_null,         NULL, NULL, 0, NULL },
+    { "/reset_multi_chunk",    test_arena_reset_multi_chunk,    NULL, NULL, 0, NULL },
+    { "/retain_noop",          test_arena_retain_noop,          NULL, NULL, 0, NULL },
+    { "/cow_noop",             test_arena_cow_noop,             NULL, NULL, 0, NULL },
     { "/sym_intern",           test_arena_sym_intern,           NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
