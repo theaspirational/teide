@@ -110,16 +110,17 @@ td_t* td_arena_alloc(td_arena_t* arena, size_t nbytes) {
 void td_arena_reset(td_arena_t* arena) {
     if (!arena || !arena->chunks) return;
 
-    /* Free all chunks, then allocate a fresh one */
-    td_arena_chunk_t* c = arena->chunks;
+    /* Keep the first chunk, free the rest */
+    td_arena_chunk_t* keep = arena->chunks;
+    td_arena_chunk_t* c = keep->next;
     while (c) {
         td_arena_chunk_t* next = c->next;
         td_sys_free(c);
         c = next;
     }
-
-    td_arena_chunk_t* fresh = arena_new_chunk(arena->chunk_size);
-    arena->chunks = fresh;
+    keep->next = NULL;
+    keep->used = 0;
+    arena->chunks = keep;
 }
 
 void td_arena_destroy(td_arena_t* arena) {
