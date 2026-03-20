@@ -173,11 +173,95 @@ static MunitResult test_csv_empty_table(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+static MunitResult test_csv_null_i64(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    FILE* f = fopen(TMP_CSV, "w");
+    fprintf(f, "x\n10\n\n30\n");
+    fclose(f);
+
+    td_t* loaded = td_read_csv(TMP_CSV);
+    munit_assert_false(TD_IS_ERR(loaded));
+    munit_assert_int(td_table_nrows(loaded), ==, 3);
+
+    td_t* col = td_table_get_col_idx(loaded, 0);
+    munit_assert_ptr_not_null(col);
+
+    munit_assert_false(td_vec_is_null(col, 0));
+    munit_assert_int(((int64_t*)td_data(col))[0], ==, 10);
+    munit_assert_true(td_vec_is_null(col, 1));
+    munit_assert_false(td_vec_is_null(col, 2));
+    munit_assert_int(((int64_t*)td_data(col))[2], ==, 30);
+
+    td_release(loaded);
+    unlink(TMP_CSV);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+static MunitResult test_csv_null_i64_unparseable(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    FILE* f = fopen(TMP_CSV, "w");
+    fprintf(f, "x\n10\nN/A\n30\n");
+    fclose(f);
+
+    td_t* loaded = td_read_csv(TMP_CSV);
+    munit_assert_false(TD_IS_ERR(loaded));
+
+    td_t* col = td_table_get_col_idx(loaded, 0);
+    munit_assert_false(td_vec_is_null(col, 0));
+    munit_assert_int(((int64_t*)td_data(col))[0], ==, 10);
+    munit_assert_true(td_vec_is_null(col, 1));
+    munit_assert_false(td_vec_is_null(col, 2));
+    munit_assert_int(((int64_t*)td_data(col))[2], ==, 30);
+
+    td_release(loaded);
+    unlink(TMP_CSV);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+static MunitResult test_csv_null_f64(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    FILE* f = fopen(TMP_CSV, "w");
+    fprintf(f, "x\n1.5\n\n3.5\n");
+    fclose(f);
+
+    td_t* loaded = td_read_csv(TMP_CSV);
+    munit_assert_false(TD_IS_ERR(loaded));
+
+    td_t* col = td_table_get_col_idx(loaded, 0);
+    munit_assert_false(td_vec_is_null(col, 0));
+    munit_assert_double_equal(((double*)td_data(col))[0], 1.5, 6);
+    munit_assert_true(td_vec_is_null(col, 1));
+    munit_assert_false(td_vec_is_null(col, 2));
+    munit_assert_double_equal(((double*)td_data(col))[2], 3.5, 6);
+
+    td_release(loaded);
+    unlink(TMP_CSV);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 static MunitTest csv_tests[] = {
     { "/roundtrip_i64",  test_csv_roundtrip_i64,  NULL, NULL, 0, NULL },
     { "/roundtrip_f64",  test_csv_roundtrip_f64,  NULL, NULL, 0, NULL },
     { "/multi_column",   test_csv_multi_column,   NULL, NULL, 0, NULL },
     { "/empty_table",    test_csv_empty_table,     NULL, NULL, 0, NULL },
+    { "/null_i64",             test_csv_null_i64,             NULL, NULL, 0, NULL },
+    { "/null_i64_unparseable", test_csv_null_i64_unparseable, NULL, NULL, 0, NULL },
+    { "/null_f64",             test_csv_null_f64,             NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 
