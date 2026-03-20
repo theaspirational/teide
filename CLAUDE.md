@@ -46,6 +46,7 @@ Core abstraction is `td_t` — a 32-byte block header. Every object (atom, vecto
 - **Error returns**: `td_t*` functions use `TD_ERR_PTR()` / `TD_IS_ERR()`; other functions return `td_err_t`
 - **No external deps**: pure C17, single public header `include/teide/td.h`
 - **No system allocator**: never use `malloc`/`calloc`/`realloc`/`free`. Use `td_alloc()`/`td_free()`.
+- **SIMD first**: performance work must prefer SIMD approaches. Profile before optimizing, benchmark after.
 
 ## Key File Paths
 
@@ -63,4 +64,6 @@ test/test_csr.c             Graph engine tests (42 tests)
 test/test_opt.c             Optimizer pass tests (filter reorder, predicate pushdown)
 test/test_store.c           Storage tests (file I/O, sym persistence, col bounds validation)
 test/test_sym.c             Sym table tests (save/load roundtrip, append-only, corruption)
+src/io/csv.{h,c}           CSV loader — mmap, parallel parse, null handling, sym merge
+bench/bench_csv*.c          CSV loading benchmarks (build with -DTEIDE_BENCH=ON)
 ```
