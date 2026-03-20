@@ -295,7 +295,7 @@ static csv_type_t detect_type(const char* f, size_t len) {
         (len == 2 && (memcmp(f, "NA", 2) == 0 || memcmp(f, "na", 2) == 0)) ||
         (len == 4 && (memcmp(f, "null", 4) == 0 || memcmp(f, "NULL", 4) == 0 ||
                       memcmp(f, "None", 4) == 0 || memcmp(f, "none", 4) == 0)) ||
-        (len == 1 && f[0] == '-'))
+        (len == 1 && f[0] == '.'))  /* bare dot — not a valid value */
         return CSV_TYPE_UNKNOWN;
 
     /* NaN/Inf literals → float */
@@ -756,7 +756,7 @@ TD_INLINE int64_t fast_timestamp(const char* p, size_t len, bool* is_null) {
     *is_null = false;
     int32_t days = fast_date(p, 10, is_null);
     if (*is_null) return 0;
-    bool time_null;
+    bool time_null = false;
     int64_t time_us = fast_time_us(p + 11, len - 11, &time_null);
     if (time_null) { *is_null = true; return 0; }
     return (int64_t)days * 86400000000LL + time_us;
@@ -1540,6 +1540,7 @@ td_t* td_read_csv_opts(const char* path, char delimiter, bool header,
                 bool* worker_had_null_buf = (bool*)td_sys_alloc(whn_sz);
                 if (!worker_had_null_buf) {
                     scratch_free(local_syms_hdr);
+                    local_syms = NULL;
                     use_parallel = false;
                 } else {
                     memset(worker_had_null_buf, 0, whn_sz);
