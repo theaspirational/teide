@@ -169,6 +169,7 @@ extern "C" {
 #define TD_ATTR_SLICE        0x10
 #define TD_ATTR_NULLMAP_EXT  0x20
 #define TD_ATTR_HAS_NULLS    0x40
+#define TD_ATTR_ARENA        0x80
 
 /* ===== Morsel Constants ===== */
 

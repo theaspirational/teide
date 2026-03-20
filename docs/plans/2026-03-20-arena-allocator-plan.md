@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Add `TD_ATTR_ARENA` Flag
+### Task 1: Add `TD_ATTR_ARENA` Flag [x]
 
 **Files:**
 - Modify: `include/teide/td.h:171`
