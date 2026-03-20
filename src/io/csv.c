@@ -41,6 +41,7 @@
 #include "mem/sys.h"
 #include "ops/pool.h"
 #include "ops/hash.h"
+#include "table/sym.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -910,30 +911,68 @@ static bool merge_local_syms(local_sym_t* local_syms, uint32_t n_workers,
                               void** col_data, int64_t n_rows,
                               td_pool_t* pool, int64_t* col_max_ids,
                               uint8_t** col_nullmaps) {
-    /* Pre-grow the global symbol table to avoid mid-merge OOM.
-     * Count total unique symbols across all workers and columns,
-     * then ensure capacity.  This is an upper bound (workers may
-     * share strings), but avoids rehash failures during insert. */
-    uint32_t total_unique = td_sym_count();
-    for (int c = 0; c < n_cols; c++) {
-        if (col_types[c] != CSV_TYPE_STR) continue;
-        for (uint32_t w = 0; w < n_workers; w++) {
-            local_sym_t* ls = &local_syms[(size_t)w * (size_t)n_cols + (size_t)c];
-            total_unique += ls->count;
-        }
-    }
-    if (total_unique > 0) {
-        td_sym_ensure_cap(total_unique);
-    }
-
     bool ok = true;
     for (int c = 0; c < n_cols; c++) {
         if (col_types[c] != CSV_TYPE_STR) continue;
 
-        /* Build per-worker mappings: local_id → global sym_id (VLA) */
+        /* --- Phase 1: Merge all worker locals into one combined table --- */
+        local_sym_t combined;
+        memset(&combined, 0, sizeof(combined));
+        local_sym_init(&combined);
+
+        int64_t* worker_to_combined[n_workers];
+        td_t* wtc_hdrs[n_workers];
+        uint32_t wtc_counts[n_workers];
+        for (uint32_t w = 0; w < n_workers; w++) {
+            worker_to_combined[w] = NULL;
+            wtc_hdrs[w] = NULL;
+            wtc_counts[w] = 0;
+        }
+
+        for (uint32_t w = 0; w < n_workers; w++) {
+            local_sym_t* ls = &local_syms[(size_t)w * (size_t)n_cols + (size_t)c];
+            if (ls->count == 0) continue;
+
+            worker_to_combined[w] = (int64_t*)scratch_alloc(&wtc_hdrs[w],
+                                        ls->count * sizeof(int64_t));
+            if (!worker_to_combined[w]) continue;
+            wtc_counts[w] = ls->count;
+
+            for (uint32_t i = 0; i < ls->count; i++) {
+                uint32_t cid = local_sym_intern(&combined,
+                    ls->arena + ls->offsets[i], ls->lens[i]);
+                worker_to_combined[w][i] = (cid == UINT32_MAX) ? 0 : (int64_t)cid;
+            }
+        }
+
+        /* --- Phase 2: Insert combined into global (unlocked, prehashed) --- */
+        uint32_t current_count = td_sym_count();
+        td_sym_ensure_cap(current_count + combined.count);
+
+        td_t* ctg_hdr = NULL;
+        int64_t* combined_to_global = NULL;
+        if (combined.count > 0) {
+            combined_to_global = (int64_t*)scratch_alloc(&ctg_hdr,
+                                    combined.count * sizeof(int64_t));
+        }
+
+        if (combined_to_global) {
+            for (uint32_t i = 0; i < combined.count; i++) {
+                uint32_t hash = (uint32_t)td_hash_bytes(
+                    combined.arena + combined.offsets[i], combined.lens[i]);
+                combined_to_global[i] = td_sym_intern_prehashed(hash,
+                    combined.arena + combined.offsets[i], combined.lens[i]);
+                if (combined_to_global[i] < 0) {
+                    ok = false;
+                    combined_to_global[i] = 0;
+                }
+            }
+        }
+
+        /* --- Phase 3: Compose mappings: worker_lid → global_id --- */
         int64_t* mappings[n_workers];
         td_t* map_hdrs[n_workers];
-        uint32_t mapping_counts[n_workers]; /* count per worker for lid bounds checking */
+        uint32_t mapping_counts[n_workers];
         for (uint32_t w = 0; w < n_workers; w++) {
             mappings[w] = NULL;
             map_hdrs[w] = NULL;
@@ -941,19 +980,25 @@ static bool merge_local_syms(local_sym_t* local_syms, uint32_t n_workers,
         }
 
         for (uint32_t w = 0; w < n_workers; w++) {
-            local_sym_t* ls = &local_syms[(size_t)w * (size_t)n_cols + (size_t)c];
-            if (ls->count == 0) continue;
+            if (!worker_to_combined[w] || wtc_counts[w] == 0) continue;
 
             mappings[w] = (int64_t*)scratch_alloc(&map_hdrs[w],
-                                                    ls->count * sizeof(int64_t));
+                                        wtc_counts[w] * sizeof(int64_t));
             if (!mappings[w]) continue;
-            mapping_counts[w] = ls->count;
-            for (uint32_t i = 0; i < ls->count; i++) {
-                mappings[w][i] = td_sym_intern(
-                    ls->arena + ls->offsets[i], ls->lens[i]);
-                if (mappings[w][i] < 0) { ok = false; mappings[w][i] = 0; }
+            mapping_counts[w] = wtc_counts[w];
+
+            for (uint32_t i = 0; i < wtc_counts[w]; i++) {
+                int64_t cid = worker_to_combined[w][i];
+                mappings[w][i] = (combined_to_global && cid >= 0 &&
+                                  (uint32_t)cid < combined.count)
+                    ? combined_to_global[cid] : 0;
             }
         }
+
+        /* Free intermediate data */
+        for (uint32_t w = 0; w < n_workers; w++) scratch_free(wtc_hdrs[w]);
+        scratch_free(ctg_hdr);
+        local_sym_free(&combined);
 
         /* Track max global sym_id for adaptive width narrowing */
         int64_t max_id = 0;
@@ -964,8 +1009,7 @@ static bool merge_local_syms(local_sym_t* local_syms, uint32_t n_workers,
         }
         if (col_max_ids) col_max_ids[c] = max_id;
 
-        /* Fix up column data: parallel unpack (wid, lid) → global sym_id.
-         * Mappings are read-only at this point — no contention. */
+        /* Fix up column data: parallel unpack (wid, lid) → global sym_id */
         uint32_t* data = (uint32_t*)col_data[c];
         uint8_t* nm = col_nullmaps ? col_nullmaps[c] : NULL;
         if (pool && n_rows > 1024) {
@@ -984,7 +1028,7 @@ static bool merge_local_syms(local_sym_t* local_syms, uint32_t n_workers,
                 if (mappings[wid] && lid < mapping_counts[wid])
                     data[r] = (uint32_t)mappings[wid][lid];
                 else
-                    data[r] = 0; /* fallback for corrupt packed value */
+                    data[r] = 0;
             }
         }
 
