@@ -703,7 +703,7 @@ git commit -m "feat: td_str_vec_set — in-place update with pool append"
 
 ---
 
-### Task 7: td_str_vec_compact — reclaim dead pool space
+### Task 7: td_str_vec_compact — reclaim dead pool space [x]
 
 **Files:**
 - Modify: `src/vec/vec.c`

@@ -392,6 +392,87 @@ static MunitResult test_str_vec_set_oob(const void* params, void* fixture) {
     return MUNIT_OK;
 }
 
+/* ---- str_vec_compact --------------------------------------------------- */
+
+static MunitResult test_str_vec_compact(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+
+    /* Fill with pooled strings */
+    v = td_str_vec_append(v, "original string one!", 20);
+    v = td_str_vec_append(v, "original string two!", 20);
+
+    /* Overwrite first — creates 20 dead bytes */
+    v = td_str_vec_set(v, 0, "replacement str one!", 20);
+
+    munit_assert_int(v->str_pool->len, ==, 60);  /* 20+20+20 */
+
+    /* Compact */
+    v = td_str_vec_compact(v);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+
+    /* Pool should shrink: only 40 live bytes (string two + replacement) */
+    munit_assert_int(v->str_pool->len, ==, 40);
+
+    /* Strings still readable */
+    size_t len;
+    const char* p0 = td_str_vec_get(v, 0, &len);
+    munit_assert_size(len, ==, 20);
+    munit_assert_memory_equal(20, p0, "replacement str one!");
+
+    const char* p1 = td_str_vec_get(v, 1, &len);
+    munit_assert_size(len, ==, 20);
+    munit_assert_memory_equal(20, p1, "original string two!");
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_vec_compact_noop(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+
+    /* No pooled strings — compact should be a no-op */
+    v = td_str_vec_append(v, "short", 5);
+    v = td_str_vec_compact(v);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+    munit_assert_null(v->str_pool);
+
+    size_t len;
+    const char* ptr = td_str_vec_get(v, 0, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, ptr, "short");
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_vec_compact_all_dead(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+
+    /* Append pooled, then overwrite to inline — all pool bytes dead */
+    v = td_str_vec_append(v, "this is a long string!", 22);
+    v = td_str_vec_set(v, 0, "short", 5);
+
+    v = td_str_vec_compact(v);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+
+    /* Pool should be freed entirely */
+    munit_assert_null(v->str_pool);
+
+    size_t len;
+    const char* ptr = td_str_vec_get(v, 0, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, ptr, "short");
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest str_tests[] = {
@@ -414,6 +495,9 @@ static MunitTest str_tests[] = {
     { "/vec_set_i2i",          test_str_vec_set_inline_to_inline, str_setup, str_teardown, 0, NULL },
     { "/vec_set_p2p",          test_str_vec_set_pooled_to_pooled, str_setup, str_teardown, 0, NULL },
     { "/vec_set_oob",          test_str_vec_set_oob,          str_setup, str_teardown, 0, NULL },
+    { "/vec_compact",          test_str_vec_compact,          str_setup, str_teardown, 0, NULL },
+    { "/vec_compact_noop",     test_str_vec_compact_noop,     str_setup, str_teardown, 0, NULL },
+    { "/vec_compact_all_dead", test_str_vec_compact_all_dead, str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

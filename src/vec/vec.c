@@ -383,6 +383,25 @@ void td_vec_set_null(td_t* vec, int64_t idx, bool is_null) {
 }
 
 /* --------------------------------------------------------------------------
+ * String pool dead-byte tracking
+ *
+ * Dead bytes are stored as a uint32_t in the pool block's nullmap[0..3],
+ * which is otherwise unused (the pool is a raw CHAR vector).
+ * -------------------------------------------------------------------------- */
+
+static inline uint32_t str_pool_dead(td_t* vec) {
+    if (!vec->str_pool) return 0;
+    uint32_t d;
+    memcpy(&d, vec->str_pool->nullmap, 4);
+    return d;
+}
+
+static inline void str_pool_add_dead(td_t* vec, uint32_t bytes) {
+    uint32_t d = str_pool_dead(vec) + bytes;
+    memcpy(vec->str_pool->nullmap, &d, 4);
+}
+
+/* --------------------------------------------------------------------------
  * td_str_vec_append — append a string to a TD_STR vector
  *
  * Strings <= 12 bytes are inlined in the td_str_t element.
@@ -500,7 +519,10 @@ td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
 
     td_str_t* elem = &((td_str_t*)td_data(vec))[idx];
 
-    /* Dead bytes tracking deferred to Task 7 (compact) */
+    /* Track dead bytes if old string was pooled */
+    if (!td_str_is_inline(elem) && elem->len > 0 && vec->str_pool) {
+        str_pool_add_dead(vec, elem->len);
+    }
 
     memset(elem, 0, sizeof(td_str_t));
     elem->len = (uint32_t)len;
@@ -541,6 +563,57 @@ td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
         elem->pool_off = (uint32_t)pool_used;
         vec->str_pool->len = pool_used + (int64_t)len;
     }
+
+    return vec;
+}
+
+/* --------------------------------------------------------------------------
+ * td_str_vec_compact — reclaim dead pool space
+ *
+ * Allocates a fresh pool containing only live pooled strings, updates
+ * element offsets, and releases the old pool.
+ * -------------------------------------------------------------------------- */
+
+td_t* td_str_vec_compact(td_t* vec) {
+    if (!vec || TD_IS_ERR(vec)) return vec;
+    if (vec->type != TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
+    if (!vec->str_pool || str_pool_dead(vec) == 0) return vec;
+
+    vec = td_cow(vec);
+    if (!vec || TD_IS_ERR(vec)) return vec;
+
+    int64_t pool_used = vec->str_pool->len;
+    uint32_t dead = str_pool_dead(vec);
+    size_t live_size = (size_t)(pool_used - dead);
+    if (live_size == 0) {
+        td_release(vec->str_pool);
+        vec->str_pool = NULL;
+        return vec;
+    }
+
+    td_t* new_pool = td_alloc(live_size);
+    if (!new_pool || TD_IS_ERR(new_pool)) return vec;
+    new_pool->type = TD_CHAR;
+    new_pool->len = 0;
+    memset(new_pool->nullmap, 0, 16);
+
+    char* old_base = (char*)td_data(vec->str_pool);
+    char* new_base = (char*)td_data(new_pool);
+    uint32_t write_off = 0;
+
+    td_str_t* elems = (td_str_t*)td_data(vec);
+    for (int64_t i = 0; i < vec->len; i++) {
+        if (td_str_is_inline(&elems[i]) || elems[i].len == 0) continue;
+
+        uint32_t slen = elems[i].len;
+        memcpy(new_base + write_off, old_base + elems[i].pool_off, slen);
+        elems[i].pool_off = write_off;
+        write_off += slen;
+    }
+
+    new_pool->len = (int64_t)write_off;
+    td_release(vec->str_pool);
+    vec->str_pool = new_pool;
 
     return vec;
 }
