@@ -121,9 +121,9 @@ TD_STR concat drops `TD_ATTR_HAS_NULLS` and external nullmaps from inputs.
 - Modify: `src/vec/vec.c:232-287`
 - Test: `test/test_str.c`
 
-- [ ] Write failing test
-- [ ] Implement null propagation fix
-- [ ] Run tests and verify pass
+- [x] Write failing test
+- [x] Implement null propagation fix
+- [x] Run tests and verify pass
 
 **Step 1: Write failing test**
 

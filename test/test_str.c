@@ -852,6 +852,38 @@ static MunitResult test_str_vec_concat_overflow_guard(const void* params, void* 
     return MUNIT_OK;
 }
 
+static MunitResult test_str_vec_concat_nulls(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* a = td_vec_new(TD_STR, 3);
+    a = td_str_vec_append(a, "hello", 5);
+    a = td_str_vec_append(a, "world", 5);
+    a = td_str_vec_append(a, "foo", 3);
+    td_vec_set_null(a, 1, true);
+
+    td_t* b = td_vec_new(TD_STR, 2);
+    b = td_str_vec_append(b, "bar", 3);
+    b = td_str_vec_append(b, "baz", 3);
+    td_vec_set_null(b, 0, true);
+
+    td_t* c = td_vec_concat(a, b);
+    munit_assert_ptr_not_null(c);
+    munit_assert_false(TD_IS_ERR(c));
+    munit_assert_int(td_len(c), ==, 5);
+
+    /* a's nulls preserved */
+    munit_assert_false(td_vec_is_null(c, 0));
+    munit_assert_true(td_vec_is_null(c, 1));   /* a[1] was null */
+    munit_assert_false(td_vec_is_null(c, 2));
+    /* b's nulls preserved at offset a->len */
+    munit_assert_true(td_vec_is_null(c, 3));    /* b[0] was null */
+    munit_assert_false(td_vec_is_null(c, 4));
+
+    td_release(c);
+    td_release(a);
+    td_release(b);
+    return MUNIT_OK;
+}
+
 static MunitTest str_tests[] = {
     { "/ptr_sso",       test_str_ptr_sso,       str_setup, str_teardown, 0, NULL },
     { "/ptr_long",      test_str_ptr_long,       str_setup, str_teardown, 0, NULL },
@@ -891,6 +923,7 @@ static MunitTest str_tests[] = {
     { "/t_hash_pooled",        test_str_t_hash_pooled,        str_setup, str_teardown, 0, NULL },
     { "/t_hash_empty",         test_str_t_hash_empty,         str_setup, str_teardown, 0, NULL },
     { "/vec_concat_overflow",  test_str_vec_concat_overflow_guard, str_setup, str_teardown, 0, NULL },
+    { "/vec_concat_nulls",    test_str_vec_concat_nulls,         str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

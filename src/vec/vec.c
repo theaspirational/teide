@@ -285,6 +285,18 @@ td_t* td_vec_concat(td_t* a, td_t* b) {
             }
         }
 
+        /* Propagate null bitmaps from a and b */
+        if ((a->attrs & TD_ATTR_HAS_NULLS) || (b->attrs & TD_ATTR_HAS_NULLS)) {
+            for (int64_t i = 0; i < a->len; i++) {
+                if (td_vec_is_null((td_t*)a, i))
+                    td_vec_set_null(result, i, true);
+            }
+            for (int64_t i = 0; i < b->len; i++) {
+                if (td_vec_is_null((td_t*)b, i))
+                    td_vec_set_null(result, a->len + i, true);
+            }
+        }
+
         return result;
     }
 
