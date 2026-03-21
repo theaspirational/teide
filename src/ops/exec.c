@@ -10717,8 +10717,10 @@ static td_t* exec_substr(td_graph_t* g, td_op_t* op) {
     else l_data = (const int64_t*)td_data(len_v);
 
     for (int64_t i = 0; i < nrows; i++) {
-        /* Propagate null */
-        if (td_vec_is_null((td_t*)input, i)) {
+        /* Propagate null — from input, start, or length */
+        if (td_vec_is_null((td_t*)input, i) ||
+            ((s_data || s_data_i32) && td_vec_is_null((td_t*)start_v, i)) ||
+            ((l_data || l_data_i32) && td_vec_is_null((td_t*)len_v, i))) {
             if (is_str) {
                 result = td_str_vec_append(result, "", 0);
                 if (TD_IS_ERR(result)) break;

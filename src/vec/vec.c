@@ -758,9 +758,13 @@ td_t* td_str_vec_compact(td_t* vec) {
     if (vec->type != TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
     if (!vec->str_pool || str_pool_dead(vec) == 0) return vec;
 
+    td_t* original = vec;
     vec = td_cow(vec);
     if (!vec || TD_IS_ERR(vec)) return vec;
-    if (!str_pool_cow(vec)) return TD_ERR_PTR(TD_ERR_OOM);
+    if (!str_pool_cow(vec)) {
+        if (vec != original) td_release(vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
 
     /* Compute true live size by scanning elements — avoids overflow when
      * the dead-byte counter (uint32_t) has saturated at UINT32_MAX. */

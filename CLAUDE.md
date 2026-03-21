@@ -31,7 +31,7 @@ Core abstraction is `td_t` — a 32-byte block header. Every object (atom, vecto
 2. Optimizer: type inference → constant fold → SIP → factorize → predicate pushdown → filter reorder → fusion → DCE
 3. Fused executor: bytecode over register slots, morsel-by-morsel (1024 elements)
 
-**Strings**: two representations — `TD_SYM` (dictionary-encoded symbol columns, integer indices into global intern table) and `TD_STR` (variable-length 16-byte `td_str_t` elements: strings <= 12 bytes stored inline, longer strings in a per-vector pool with 4-byte prefix for fast comparison rejection). All string opcodes (comparisons, STRLEN, UPPER/LOWER/TRIM, SUBSTR, REPLACE, CONCAT, IF) support both types. Access via `td_str_vec_get()`; executor uses `str_resolve()` to get element array + pool pointer. Hash via `td_str_t_hash()`, compare via `td_str_t_cmp()`/`td_str_t_eq()`.
+**Strings**: two representations — `TD_SYM` (dictionary-encoded symbol columns, integer indices into global intern table) and `TD_STR` (variable-length 16-byte `td_str_t` elements: strings <= 12 bytes stored inline, longer strings in a per-vector pool with 4-byte prefix for fast comparison rejection). All string opcodes (comparisons, STRLEN, UPPER/LOWER/TRIM, SUBSTR, REPLACE, CONCAT, IF) support both types. All string opcodes propagate nulls: null input rows produce null output rows (CONCAT is null if any argument is null). Access via `td_str_vec_get()`; executor uses `str_resolve()` to get element array + pool pointer. Hash via `td_str_t_hash()`, compare via `td_str_t_cmp()`/`td_str_t_eq()`. During execution, `col_propagate_str_pool()` shares the source pool with the destination vector; both src and dst must be TD_STR.
 
 **Graph engine**: CSR edge indices (`td_csr_t`, `td_rel_t`) alongside columnar tables.
 - Storage: double-indexed CSR (forward + reverse), persisted as `.col` files, supports mmap
@@ -46,6 +46,7 @@ Core abstraction is `td_t` — a 32-byte block header. Every object (atom, vecto
 - **Types**: `td_name_t` (typedef'd structs)
 - **Morsel-only processing**: all vector loops chunk through `td_morsel_t` (1024 elements)
 - **Error returns**: `td_t*` functions use `TD_ERR_PTR()` / `TD_IS_ERR()`; other functions return `td_err_t`
+- **COW cleanup**: after `td_cow()` returns a new copy, all error paths must release it (`if (vec != original) td_release(vec)`). Use `goto fail` pattern.
 - **No external deps**: pure C17, single public header `include/teide/td.h`
 - **No system allocator**: never use `malloc`/`calloc`/`realloc`/`free`. Use `td_alloc()`/`td_free()` for general allocation, `td_arena_alloc()` for bulk short-lived blocks. `td_sys_alloc`/`td_sys_free` reserved for allocator internals only.
 - **SIMD first**: performance work must prefer SIMD approaches. Profile before optimizing, benchmark after.
