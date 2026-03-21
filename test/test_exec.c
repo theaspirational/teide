@@ -2085,6 +2085,120 @@ static MunitResult test_exec_cast(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+/* Helper: create table with TD_STR "name" column — 5 rows */
+static td_t* make_str_table(void) {
+    td_t* col = td_vec_new(TD_STR, 5);
+    col = td_str_vec_append(col, "hello", 5);
+    col = td_str_vec_append(col, "WORLD", 5);
+    col = td_str_vec_append(col, "  foo  ", 7);
+    col = td_str_vec_append(col, "bar_baz", 7);
+    col = td_str_vec_append(col, "", 0);
+
+    int64_t name_id = td_sym_intern("name", 4);
+    td_t* tbl = td_table_new(1);
+    tbl = td_table_add_col(tbl, name_id, col);
+    td_release(col);
+    return tbl;
+}
+
+/* ---- TD_STR EQ ---- */
+static MunitResult test_exec_str_eq(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* lit = td_const_str(g, "hello");
+    td_op_t* eq = td_eq(g, name, lit);
+
+    td_t* result = td_execute(g, eq);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_BOOL);
+    munit_assert_int(result->len, ==, 5);
+
+    uint8_t* d = (uint8_t*)td_data(result);
+    munit_assert_int(d[0], ==, 1);  /* "hello" == "hello" */
+    munit_assert_int(d[1], ==, 0);  /* "WORLD" != "hello" */
+    munit_assert_int(d[2], ==, 0);
+    munit_assert_int(d[3], ==, 0);
+    munit_assert_int(d[4], ==, 0);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ---- TD_STR NE ---- */
+static MunitResult test_exec_str_ne(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* lit = td_const_str(g, "hello");
+    td_op_t* ne = td_ne(g, name, lit);
+
+    td_t* result = td_execute(g, ne);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_BOOL);
+    munit_assert_int(result->len, ==, 5);
+
+    uint8_t* d = (uint8_t*)td_data(result);
+    munit_assert_int(d[0], ==, 0);  /* "hello" != "hello" -> false */
+    munit_assert_int(d[1], ==, 1);  /* "WORLD" != "hello" -> true */
+    munit_assert_int(d[2], ==, 1);
+    munit_assert_int(d[3], ==, 1);
+    munit_assert_int(d[4], ==, 1);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ---- TD_STR LT ---- */
+static MunitResult test_exec_str_lt(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* lit = td_const_str(g, "hello");
+    td_op_t* lt = td_lt(g, name, lit);
+
+    td_t* result = td_execute(g, lt);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_BOOL);
+    munit_assert_int(result->len, ==, 5);
+
+    uint8_t* d = (uint8_t*)td_data(result);
+    /* Lexicographic: "  foo  " < "hello", "WORLD" < "hello" (uppercase < lowercase),
+       "bar_baz" < "hello", "" < "hello" */
+    munit_assert_int(d[0], ==, 0);  /* "hello" < "hello" -> false */
+    munit_assert_int(d[1], ==, 1);  /* "WORLD" < "hello" -> true (W=0x57 < h=0x68) */
+    munit_assert_int(d[2], ==, 1);  /* "  foo  " < "hello" -> true (space=0x20 < h=0x68) */
+    munit_assert_int(d[3], ==, 1);  /* "bar_baz" < "hello" -> true */
+    munit_assert_int(d[4], ==, 1);  /* "" < "hello" -> true */
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* ---- GRAPH DUMP (smoke test) ---- */
 static MunitResult test_graph_dump(const void* params, void* data) {
     (void)params; (void)data;
@@ -2155,6 +2269,9 @@ static MunitTest exec_tests[] = {
     { "/date_trunc",     test_exec_date_trunc,        NULL, NULL, 0, NULL },
     { "/cast",           test_exec_cast,              NULL, NULL, 0, NULL },
     { "/graph_dump",     test_graph_dump,             NULL, NULL, 0, NULL },
+    { "/str_eq",         test_exec_str_eq,            NULL, NULL, 0, NULL },
+    { "/str_ne",         test_exec_str_ne,            NULL, NULL, 0, NULL },
+    { "/str_lt",         test_exec_str_lt,            NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 

@@ -310,7 +310,7 @@ git commit -m "feat: td_str_t_hash — wyhash for inline and pooled strings"
 
 ---
 
-### Task 3: Binary comparisons (OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE) for TD_STR
+### Task 3: Binary comparisons (OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE) for TD_STR [DONE]
 
 The core DuckDB-style comparison path.
 

@@ -1352,6 +1352,93 @@ static td_t* exec_elementwise_unary(td_graph_t* g, td_op_t* op, td_t* input) {
     return result;
 }
 
+/* Convert an atom (TD_ATOM_STR or TD_SYM scalar) to td_str_t for comparison */
+static void atom_to_str_t(td_t* atom, td_str_t* out, const char** out_pool) {
+    const char* sp;
+    size_t sl;
+    if (atom->type == TD_ATOM_STR) {
+        sp = td_str_ptr(atom);
+        sl = td_str_len(atom);
+    } else if (TD_IS_SYM(atom->type) && td_is_atom(atom)) {
+        td_t* s = td_sym_str(atom->i64);
+        sp = s ? td_str_ptr(s) : "";
+        sl = s ? td_str_len(s) : 0;
+    } else {
+        sp = ""; sl = 0;
+    }
+    memset(out, 0, sizeof(td_str_t));
+    out->len = (uint32_t)sl;
+    if (sl <= TD_STR_INLINE_MAX) {
+        if (sl > 0) memcpy(out->data, sp, sl);
+        *out_pool = NULL;
+    } else {
+        memcpy(out->prefix, sp, 4);
+        out->pool_off = 0;
+        *out_pool = sp; /* point directly at atom's string data */
+    }
+}
+
+/* Inner loop for binary element-wise string comparison over [start, end) */
+static void binary_range_str(td_op_t* op, td_t* lhs, td_t* rhs, td_t* result,
+                             bool l_scalar, bool r_scalar,
+                             int64_t start, int64_t end) {
+    uint8_t* dst = (uint8_t*)td_data(result) + start;
+    int64_t n = end - start;
+    uint16_t opc = op->opcode;
+
+    const td_str_t* l_elems = l_scalar ? NULL : (const td_str_t*)td_data(lhs) + start;
+    const td_str_t* r_elems = r_scalar ? NULL : (const td_str_t*)td_data(rhs) + start;
+    const char* l_pool = (!l_scalar && lhs->str_pool) ? (const char*)td_data(lhs->str_pool) : NULL;
+    const char* r_pool = (!r_scalar && rhs->str_pool) ? (const char*)td_data(rhs->str_pool) : NULL;
+
+    /* For scalar side, build a single td_str_t */
+    td_str_t l_scalar_elem = {0}, r_scalar_elem = {0};
+    const char* l_scalar_pool = NULL;
+    const char* r_scalar_pool = NULL;
+    if (l_scalar) {
+        atom_to_str_t(lhs, &l_scalar_elem, &l_scalar_pool);
+        l_elems = &l_scalar_elem;
+    }
+    if (r_scalar) {
+        atom_to_str_t(rhs, &r_scalar_elem, &r_scalar_pool);
+        r_elems = &r_scalar_elem;
+    }
+
+    for (int64_t i = 0; i < n; i++) {
+        const td_str_t* a = l_scalar ? l_elems : &l_elems[i];
+        const td_str_t* b = r_scalar ? r_elems : &r_elems[i];
+        const char* pa = l_scalar ? l_scalar_pool : l_pool;
+        const char* pb = r_scalar ? r_scalar_pool : r_pool;
+
+        switch (opc) {
+            case OP_EQ: dst[i] = td_str_t_eq(a, pa, b, pb); break;
+            case OP_NE: dst[i] = !td_str_t_eq(a, pa, b, pb); break;
+            case OP_LT: dst[i] = td_str_t_cmp(a, pa, b, pb) < 0; break;
+            case OP_LE: dst[i] = td_str_t_cmp(a, pa, b, pb) <= 0; break;
+            case OP_GT: dst[i] = td_str_t_cmp(a, pa, b, pb) > 0; break;
+            case OP_GE: dst[i] = td_str_t_cmp(a, pa, b, pb) >= 0; break;
+            default: dst[i] = 0; break;
+        }
+    }
+}
+
+/* Context for parallel TD_STR binary dispatch */
+typedef struct {
+    td_op_t* op;
+    td_t*    lhs;
+    td_t*    rhs;
+    td_t*    result;
+    bool     l_scalar;
+    bool     r_scalar;
+} par_binary_str_ctx_t;
+
+static void par_binary_str_fn(void* ctx, uint32_t worker_id, int64_t start, int64_t end) {
+    (void)worker_id;
+    par_binary_str_ctx_t* c = (par_binary_str_ctx_t*)ctx;
+    binary_range_str(c->op, c->lhs, c->rhs, c->result,
+                     c->l_scalar, c->r_scalar, start, end);
+}
+
 /* Inner loop for binary element-wise over a range [start, end) */
 static void binary_range(td_op_t* op, int8_t out_type,
                          td_t* lhs, td_t* rhs, td_t* result,
@@ -1510,6 +1597,34 @@ static td_t* exec_elementwise_binary(td_graph_t* g, td_op_t* op, td_t* lhs, td_t
     td_t* result = td_vec_new(out_type, len);
     if (!result || TD_IS_ERR(result)) return result;
     result->len = len;
+
+    /* TD_STR comparison: use td_str_t_eq / td_str_t_cmp directly.
+       Handles TD_STR column vs TD_STR column, or TD_ATOM_STR scalar vs TD_STR column. */
+    {
+        bool l_is_str = (!l_scalar && lhs->type == TD_STR);
+        bool r_is_str = (!r_scalar && rhs->type == TD_STR);
+        bool l_atom_str = (l_scalar && (lhs->type == TD_ATOM_STR));
+        bool r_atom_str = (r_scalar && (rhs->type == TD_ATOM_STR));
+
+        if (l_is_str || r_is_str) {
+            /* At least one side is a TD_STR column — use string comparison path.
+               The scalar side (if any) must be TD_ATOM_STR. */
+            if (l_scalar && !l_atom_str) { td_release(result); return TD_ERR_PTR(TD_ERR_TYPE); }
+            if (r_scalar && !r_atom_str) { td_release(result); return TD_ERR_PTR(TD_ERR_TYPE); }
+
+            td_pool_t* pool = td_pool_get();
+            if (pool && len >= TD_PARALLEL_THRESHOLD) {
+                par_binary_str_ctx_t ctx = {
+                    .op = op, .lhs = lhs, .rhs = rhs, .result = result,
+                    .l_scalar = l_scalar, .r_scalar = r_scalar,
+                };
+                td_pool_dispatch(pool, par_binary_str_fn, &ctx, len);
+                return result;
+            }
+            binary_range_str(op, lhs, rhs, result, l_scalar, r_scalar, 0, len);
+            return result;
+        }
+    }
 
     /* SYM vs STR comparison: resolve string constant to intern ID so we
        can compare numerically against SYM intern indices.
