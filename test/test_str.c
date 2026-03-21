@@ -541,9 +541,9 @@ static MunitResult test_str_vec_compact_all_dead(const void* params, void* fixtu
     return MUNIT_OK;
 }
 
-/* ---- compact with saturated dead counter -------------------------------- */
+/* ---- compact: all pool bytes dead after overwrite ----------------------- */
 
-static MunitResult test_str_vec_compact_saturated_dead(const void* params, void* fixture) {
+static MunitResult test_str_vec_compact_all_pool_dead(const void* params, void* fixture) {
     (void)params; (void)fixture;
     td_t* v = td_vec_new(TD_STR, 4);
 
@@ -966,7 +966,7 @@ static MunitTest str_tests[] = {
     { "/vec_compact",          test_str_vec_compact,          str_setup, str_teardown, 0, NULL },
     { "/vec_compact_noop",     test_str_vec_compact_noop,     str_setup, str_teardown, 0, NULL },
     { "/vec_compact_all_dead", test_str_vec_compact_all_dead, str_setup, str_teardown, 0, NULL },
-    { "/vec_compact_saturated_dead", test_str_vec_compact_saturated_dead, str_setup, str_teardown, 0, NULL },
+    { "/vec_compact_all_pool_dead", test_str_vec_compact_all_pool_dead, str_setup, str_teardown, 0, NULL },
     { "/t_eq_inline",          test_str_t_eq_inline,          str_setup, str_teardown, 0, NULL },
     { "/t_eq_pooled",          test_str_t_eq_pooled,          str_setup, str_teardown, 0, NULL },
     { "/t_cmp_order",          test_str_t_cmp_order,          str_setup, str_teardown, 0, NULL },

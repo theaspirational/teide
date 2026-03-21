@@ -1384,6 +1384,10 @@ static void atom_to_str_t(td_t* atom, td_str_t* out, const char** out_pool) {
         *out_pool = atom->str_pool ? (const char*)td_data(atom->str_pool) : NULL;
         return;
     } else if (TD_IS_SYM(atom->type) && td_is_atom(atom)) {
+        /* SAFETY: td_sym_str returns a borrowed pointer into the append-only
+         * sym table.  The pointer is valid for the lifetime of the sym table
+         * (i.e., the entire query execution).  If the sym table ever gains
+         * eviction, this must retain the returned atom. */
         td_t* s = td_sym_str(atom->i64);
         sp = s ? td_str_ptr(s) : "";
         sl = s ? td_str_len(s) : 0;

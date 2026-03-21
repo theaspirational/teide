@@ -2781,12 +2781,21 @@ static MunitResult test_exec_str_eq_empty_vec_scalar(const void* params, void* d
     td_op_t* eq    = td_eq(g, name, empty);
     td_t* result   = td_execute(g, eq);
 
-    /* Should not crash — either returns error or produces result */
-    if (!TD_IS_ERR(result)) {
+    /* Must not crash (the fix prevents OOB read in atom_to_str_t).
+     * The executor may return an error for a 0-length column — that is
+     * acceptable.  If it produces a result, verify contents. */
+    if (TD_IS_ERR(result)) {
+        /* Valid error pointer — no crash, fix is working */
+        munit_assert_ptr_not_null(result);
+    } else {
         munit_assert_int(result->type, ==, TD_BOOL);
+        munit_assert_int(result->len, ==, 3);
+        uint8_t* d = (uint8_t*)td_data(result);
+        munit_assert_int(d[0], ==, 0);  /* "alice" != "" */
+        munit_assert_int(d[1], ==, 0);  /* "bob"   != "" */
+        munit_assert_int(d[2], ==, 1);  /* ""      == "" */
         td_release(result);
     }
-
     td_graph_free(g);
     td_release(tbl);
     td_sym_destroy();
