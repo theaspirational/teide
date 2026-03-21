@@ -1641,7 +1641,7 @@ static td_t* exec_elementwise_binary(td_graph_t* g, td_op_t* op, td_t* lhs, td_t
                           || rhs->type == TD_STR
                           || (TD_IS_SYM(rhs->type) && td_is_atom(rhs))));
 
-        if (l_is_str || r_is_str) {
+        if (l_is_str || r_is_str || (l_atom_str && r_atom_str)) {
             /* TD_STR only supports comparison ops — reject arithmetic */
             uint16_t opc = op->opcode;
             if (opc < OP_EQ || opc > OP_GE) { td_release(result); return TD_ERR_PTR(TD_ERR_TYPE); }
