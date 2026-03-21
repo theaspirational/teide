@@ -485,6 +485,7 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
         if ((size_t)pool_used + len > pool_cap) {
             size_t need = (size_t)pool_used + len;
             size_t new_cap = pool_cap;
+            if (new_cap == 0) new_cap = 256;
             while (new_cap < need) {
                 if (new_cap > SIZE_MAX / 2) return vec;
                 new_cap *= 2;
@@ -607,6 +608,7 @@ td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
         if ((size_t)pool_used + len > pool_cap) {
             size_t need = (size_t)pool_used + len;
             size_t new_cap = pool_cap;
+            if (new_cap == 0) new_cap = 256;
             while (new_cap < need) {
                 if (new_cap > SIZE_MAX / 2) return vec;
                 new_cap *= 2;
@@ -673,7 +675,7 @@ td_t* td_str_vec_compact(td_t* vec) {
 
     td_str_t* elems = (td_str_t*)td_data(vec);
     for (int64_t i = 0; i < vec->len; i++) {
-        if (td_str_is_inline(&elems[i]) || elems[i].len == 0) continue;
+        if (td_vec_is_null(vec, i) || td_str_is_inline(&elems[i]) || elems[i].len == 0) continue;
 
         uint32_t slen = elems[i].len;
         memcpy(new_base + write_off, old_base + elems[i].pool_off, slen);
