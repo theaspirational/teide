@@ -2621,6 +2621,7 @@ static td_t* sel_compact(td_graph_t* g, td_t* tbl, td_t* sel) {
 
     for (int64_t c = 0; c < ncols; c++) {
         if (!new_cols[c]) continue;
+        col_propagate_str_pool(new_cols[c], td_table_get_col_idx(tbl, c));
         out = td_table_add_col(out, col_names[c], new_cols[c]);
         td_release(new_cols[c]);
     }
