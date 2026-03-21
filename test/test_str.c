@@ -150,6 +150,31 @@ static MunitResult test_str_cmp_prefix(const void* params, void* fixture) {
     return MUNIT_OK;
 }
 
+/* ---- str_vec_new ------------------------------------------------------- */
+
+static MunitResult test_str_vec_new(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 10);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+    munit_assert_int(v->type, ==, TD_STR);
+    munit_assert_int(td_len(v), ==, 0);
+    /* Pool starts as NULL (no long strings yet) */
+    munit_assert_null(v->str_pool);
+    td_release(v);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_vec_new_zero_cap(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 0);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+    munit_assert_int(v->type, ==, TD_STR);
+    td_release(v);
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest str_tests[] = {
@@ -159,6 +184,8 @@ static MunitTest str_tests[] = {
     { "/cmp_equal",     test_str_cmp_equal,       str_setup, str_teardown, 0, NULL },
     { "/cmp_different", test_str_cmp_different,   str_setup, str_teardown, 0, NULL },
     { "/cmp_prefix",    test_str_cmp_prefix,      str_setup, str_teardown, 0, NULL },
+    { "/vec_new",       test_str_vec_new,         str_setup, str_teardown, 0, NULL },
+    { "/vec_new_zero",  test_str_vec_new_zero_cap, str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

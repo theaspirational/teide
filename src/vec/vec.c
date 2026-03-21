@@ -63,6 +63,7 @@ td_t* td_vec_new(int8_t type, int64_t capacity) {
     v->len = 0;
     v->attrs = 0;
     memset(v->nullmap, 0, 16);
+    if (type == TD_STR) v->str_pool = NULL;
 
     return v;
 }
