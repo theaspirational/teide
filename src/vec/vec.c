@@ -462,6 +462,28 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
 }
 
 /* --------------------------------------------------------------------------
+ * td_str_vec_get — read a string from a TD_STR vector by index
+ *
+ * Returns a pointer to the string data (inline or pool) and sets *out_len.
+ * Returns NULL for invalid input or out-of-bounds index.
+ * -------------------------------------------------------------------------- */
+
+const char* td_str_vec_get(td_t* vec, int64_t idx, size_t* out_len) {
+    if (!vec || TD_IS_ERR(vec) || vec->type != TD_STR) return NULL;
+    if (idx < 0 || idx >= vec->len) return NULL;
+
+    const td_str_t* elem = &((const td_str_t*)td_data(vec))[idx];
+    *out_len = elem->len;
+
+    if (elem->len == 0) return "";
+    if (td_str_is_inline(elem)) return elem->data;
+
+    /* Pooled: resolve via pool */
+    if (!vec->str_pool) return NULL;
+    return (const char*)td_data(vec->str_pool) + elem->pool_off;
+}
+
+/* --------------------------------------------------------------------------
  * td_embedding_new — create a flat F32 vector for N*D embedding storage
  * -------------------------------------------------------------------------- */
 

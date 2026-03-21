@@ -773,6 +773,7 @@ bool  td_vec_is_null(td_t* vec, int64_t idx);
 /* ===== String Vector API ===== */
 
 td_t* td_str_vec_append(td_t* vec, const char* s, size_t len);
+const char* td_str_vec_get(td_t* vec, int64_t idx, size_t* out_len);
 
 /* ===== String API ===== */
 

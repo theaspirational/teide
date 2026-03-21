@@ -290,6 +290,51 @@ static MunitResult test_str_vec_append_mixed(const void* params, void* fixture) 
     return MUNIT_OK;
 }
 
+/* ---- str_vec_get ------------------------------------------------------- */
+
+static MunitResult test_str_vec_get_inline(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "hello", 5);
+
+    size_t len;
+    const char* ptr = td_str_vec_get(v, 0, &len);
+    munit_assert_ptr_not_null(ptr);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, ptr, "hello");
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_vec_get_pooled(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "this is a long string!", 22);
+
+    size_t len;
+    const char* ptr = td_str_vec_get(v, 0, &len);
+    munit_assert_ptr_not_null(ptr);
+    munit_assert_size(len, ==, 22);
+    munit_assert_memory_equal(22, ptr, "this is a long string!");
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_vec_get_oob(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "hello", 5);
+
+    size_t len;
+    const char* ptr = td_str_vec_get(v, 1, &len);
+    munit_assert_null(ptr);
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest str_tests[] = {
@@ -306,6 +351,9 @@ static MunitTest str_tests[] = {
     { "/vec_append_empty",     test_str_vec_append_empty,     str_setup, str_teardown, 0, NULL },
     { "/vec_append_pooled",    test_str_vec_append_pooled,    str_setup, str_teardown, 0, NULL },
     { "/vec_append_mixed",     test_str_vec_append_mixed,     str_setup, str_teardown, 0, NULL },
+    { "/vec_get_inline",       test_str_vec_get_inline,       str_setup, str_teardown, 0, NULL },
+    { "/vec_get_pooled",       test_str_vec_get_pooled,       str_setup, str_teardown, 0, NULL },
+    { "/vec_get_oob",          test_str_vec_get_oob,          str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

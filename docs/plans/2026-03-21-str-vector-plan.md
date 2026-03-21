@@ -451,7 +451,7 @@ git commit -m "feat: td_str_vec_append — pooled path for strings > 12 bytes"
 
 ---
 
-### Task 5: td_str_vec_get — read string from vector
+### Task 5: td_str_vec_get — read string from vector [x]
 
 **Files:**
 - Modify: `src/vec/vec.c`
