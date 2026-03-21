@@ -695,6 +695,77 @@ static MunitResult test_str_vec_grow(const void* params, void* fixture) {
     return MUNIT_OK;
 }
 
+/* ---- Slice tests ------------------------------------------------------- */
+
+static MunitResult test_str_vec_slice(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "hello", 5);
+    v = td_str_vec_append(v, "this is a long string!", 22);
+    v = td_str_vec_append(v, "world", 5);
+    v = td_str_vec_append(v, "another long string!!", 21);
+
+    td_t* s = td_vec_slice(v, 1, 2);
+    munit_assert_ptr_not_null(s);
+    munit_assert_false(TD_IS_ERR(s));
+    munit_assert_int(td_len(s), ==, 2);
+
+    /* Read through slice — pooled string */
+    size_t len;
+    const char* p0 = td_str_vec_get(s, 0, &len);
+    munit_assert_size(len, ==, 22);
+    munit_assert_memory_equal(22, p0, "this is a long string!");
+
+    /* Read through slice — inline string */
+    const char* p1 = td_str_vec_get(s, 1, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, p1, "world");
+
+    td_release(s);
+    td_release(v);
+    return MUNIT_OK;
+}
+
+/* ---- Concat tests ------------------------------------------------------ */
+
+static MunitResult test_str_vec_concat_vecs(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* a = td_vec_new(TD_STR, 2);
+    a = td_str_vec_append(a, "hello", 5);
+    a = td_str_vec_append(a, "this is long string a!", 22);
+
+    td_t* b = td_vec_new(TD_STR, 2);
+    b = td_str_vec_append(b, "world", 5);
+    b = td_str_vec_append(b, "this is long string b!", 22);
+
+    td_t* c = td_vec_concat(a, b);
+    munit_assert_ptr_not_null(c);
+    munit_assert_false(TD_IS_ERR(c));
+    munit_assert_int(td_len(c), ==, 4);
+
+    size_t len;
+    const char* p0 = td_str_vec_get(c, 0, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, p0, "hello");
+
+    const char* p1 = td_str_vec_get(c, 1, &len);
+    munit_assert_size(len, ==, 22);
+    munit_assert_memory_equal(22, p1, "this is long string a!");
+
+    const char* p2 = td_str_vec_get(c, 2, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, p2, "world");
+
+    const char* p3 = td_str_vec_get(c, 3, &len);
+    munit_assert_size(len, ==, 22);
+    munit_assert_memory_equal(22, p3, "this is long string b!");
+
+    td_release(c);
+    td_release(a);
+    td_release(b);
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest str_tests[] = {
@@ -730,6 +801,8 @@ static MunitTest str_tests[] = {
     { "/vec_null",             test_str_vec_null,             str_setup, str_teardown, 0, NULL },
     { "/vec_null_pooled",      test_str_vec_null_pooled,      str_setup, str_teardown, 0, NULL },
     { "/vec_grow",             test_str_vec_grow,             str_setup, str_teardown, 0, NULL },
+    { "/vec_slice",            test_str_vec_slice,            str_setup, str_teardown, 0, NULL },
+    { "/vec_concat",           test_str_vec_concat_vecs,      str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

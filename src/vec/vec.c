@@ -188,7 +188,6 @@ void* td_vec_get(td_t* vec, int64_t idx) {
 
 td_t* td_vec_slice(td_t* vec, int64_t offset, int64_t len) {
     if (!vec || TD_IS_ERR(vec)) return vec;
-    if (vec->type == TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
     if (offset < 0 || len < 0 || offset > vec->len || len > vec->len - offset)
         return TD_ERR_PTR(TD_ERR_RANGE);
 
@@ -225,7 +224,63 @@ td_t* td_vec_concat(td_t* a, td_t* b) {
     if (!b || TD_IS_ERR(b)) return b;
     if (a->type != b->type)
         return TD_ERR_PTR(TD_ERR_TYPE);
-    if (a->type == TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
+
+    if (a->type == TD_STR) {
+        int64_t total_len = a->len + b->len;
+        if (total_len < a->len) return TD_ERR_PTR(TD_ERR_OOM);
+
+        td_t* result = td_vec_new(TD_STR, total_len);
+        if (!result || TD_IS_ERR(result)) return result;
+        result->len = total_len;
+
+        td_str_t* dst = (td_str_t*)td_data(result);
+
+        /* Resolve a's data (may be a slice) */
+        const td_str_t* a_elems = (a->attrs & TD_ATTR_SLICE)
+            ? &((const td_str_t*)td_data(a->slice_parent))[a->slice_offset]
+            : (const td_str_t*)td_data(a);
+        td_t* a_pool_owner = (a->attrs & TD_ATTR_SLICE) ? a->slice_parent : a;
+
+        /* Resolve b's data (may be a slice) */
+        const td_str_t* b_elems = (b->attrs & TD_ATTR_SLICE)
+            ? &((const td_str_t*)td_data(b->slice_parent))[b->slice_offset]
+            : (const td_str_t*)td_data(b);
+        td_t* b_pool_owner = (b->attrs & TD_ATTR_SLICE) ? b->slice_parent : b;
+
+        /* Copy a's elements as-is */
+        memcpy(dst, a_elems, (size_t)a->len * sizeof(td_str_t));
+
+        /* Merge pools: a's pool + b's pool */
+        int64_t a_pool_size = (a_pool_owner->str_pool) ? a_pool_owner->str_pool->len : 0;
+        int64_t b_pool_size = (b_pool_owner->str_pool) ? b_pool_owner->str_pool->len : 0;
+        int64_t total_pool = a_pool_size + b_pool_size;
+
+        if (total_pool > 0) {
+            result->str_pool = td_alloc((size_t)total_pool);
+            if (!result->str_pool || TD_IS_ERR(result->str_pool)) {
+                result->str_pool = NULL;
+                td_release(result);
+                return TD_ERR_PTR(TD_ERR_OOM);
+            }
+            result->str_pool->type = TD_CHAR;
+            result->str_pool->len = total_pool;
+            char* pool_dst = (char*)td_data(result->str_pool);
+            if (a_pool_size > 0)
+                memcpy(pool_dst, td_data(a_pool_owner->str_pool), (size_t)a_pool_size);
+            if (b_pool_size > 0)
+                memcpy(pool_dst + a_pool_size, td_data(b_pool_owner->str_pool), (size_t)b_pool_size);
+        }
+
+        /* Copy b's elements, rebasing pool offsets */
+        for (int64_t i = 0; i < b->len; i++) {
+            dst[a->len + i] = b_elems[i];
+            if (!td_str_is_inline(&b_elems[i]) && b_elems[i].len > 0) {
+                dst[a->len + i].pool_off += (uint32_t)a_pool_size;
+            }
+        }
+
+        return result;
+    }
 
     uint8_t a_esz = td_sym_elem_size(a->type, a->attrs);
     uint8_t b_esz = td_sym_elem_size(b->type, b->attrs);
@@ -547,15 +602,23 @@ const char* td_str_vec_get(td_t* vec, int64_t idx, size_t* out_len) {
     if (!vec || TD_IS_ERR(vec) || vec->type != TD_STR) return NULL;
     if (idx < 0 || idx >= vec->len) return NULL;
 
-    const td_str_t* elem = &((const td_str_t*)td_data(vec))[idx];
+    /* Slice: redirect to parent */
+    td_t* data_owner = vec;
+    int64_t data_idx = idx;
+    if (vec->attrs & TD_ATTR_SLICE) {
+        data_owner = vec->slice_parent;
+        data_idx = vec->slice_offset + idx;
+    }
+
+    const td_str_t* elem = &((const td_str_t*)td_data(data_owner))[data_idx];
     if (out_len) *out_len = elem->len;
 
     if (elem->len == 0) return "";
     if (td_str_is_inline(elem)) return elem->data;
 
     /* Pooled: resolve via pool */
-    if (!vec->str_pool) return NULL;
-    return (const char*)td_data(vec->str_pool) + elem->pool_off;
+    if (!data_owner->str_pool) return NULL;
+    return (const char*)td_data(data_owner->str_pool) + elem->pool_off;
 }
 
 /* --------------------------------------------------------------------------
