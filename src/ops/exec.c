@@ -154,6 +154,17 @@ static inline td_t* col_vec_new(const td_t* src, int64_t cap) {
     return td_vec_new(src->type, cap);
 }
 
+/* Propagate str_pool from source to gathered result.
+ * Source may be a slice — resolve to owner's pool. */
+static inline void col_propagate_str_pool(td_t* dst, const td_t* src) {
+    if (src->type != TD_STR) return;
+    const td_t* owner = (src->attrs & TD_ATTR_SLICE) ? src->slice_parent : src;
+    if (owner->str_pool) {
+        td_retain(owner->str_pool);
+        dst->str_pool = owner->str_pool;
+    }
+}
+
 /* Same but from explicit type + attrs (for parted base type, etc.) */
 static inline td_t* typed_vec_new(int8_t type, uint8_t attrs, int64_t cap) {
     if (type == TD_SYM)
@@ -2129,6 +2140,7 @@ static td_t* exec_filter_vec(td_t* input, td_t* pred, int64_t pass_count) {
         }
     }
 
+    col_propagate_str_pool(result, input);
     return result;
 }
 
@@ -2342,6 +2354,13 @@ static td_t* exec_filter(td_graph_t* g, td_op_t* op, td_t* input, td_t* pred) {
             for (int64_t i = 0; i < pass_count; i++)
                 memcpy(dst + i * esz, src + match_idx[i] * esz, esz);
         }
+    }
+
+    /* Propagate str_pool for any TD_STR columns gathered by index */
+    for (int64_t c = 0; c < ncols; c++) {
+        if (!new_cols[c]) continue;
+        td_t* col = td_table_get_col_idx(input, c);
+        if (col) col_propagate_str_pool(new_cols[c], col);
     }
 
     for (int64_t c = 0; c < ncols; c++) {
@@ -2681,6 +2700,11 @@ static int sort_cmp(const sort_cmp_ctx_t* ctx, int64_t a, int64_t b) {
             int32_t vb = ((int32_t*)td_data(col))[b];
             if (va < vb) cmp = -1;
             else if (va > vb) cmp = 1;
+        } else if (col->type == TD_STR) {
+            const td_str_t* elems;
+            const char* pool;
+            str_resolve(col, &elems, &pool);
+            cmp = td_str_t_cmp(&elems[a], pool, &elems[b], pool);
         }
 
         if (desc && !null_cmp) cmp = -cmp;
@@ -4931,6 +4955,13 @@ static td_t* exec_sort(td_graph_t* g, td_op_t* op, td_t* tbl, int64_t limit) {
                     memcpy(dst_p + i * esz, src_p + sorted_idx[i] * esz, esz);
             }
         }
+    }
+
+    /* Propagate str_pool for any TD_STR columns gathered by index */
+    for (int64_t c = 0; c < ncols; c++) {
+        if (!new_cols[c]) continue;
+        td_t* col = td_table_get_col_idx(tbl, c);
+        if (col) col_propagate_str_pool(new_cols[c], col);
     }
 
     for (int64_t c = 0; c < ncols; c++) {
@@ -10061,6 +10092,7 @@ static td_t* exec_window_join(td_graph_t* g, td_op_t* op,
             wi++;
         }
         dst_col->len = out_n;
+        col_propagate_str_pool(dst_col, src_col);
         out = td_table_add_col(out, col_name, dst_col);
         td_release(dst_col);
     }
@@ -10087,6 +10119,7 @@ static td_t* exec_window_join(td_graph_t* g, td_op_t* op,
             wi++;
         }
         dst_col->len = out_n;
+        col_propagate_str_pool(dst_col, src_col);
         out = td_table_add_col(out, col_name, dst_col);
         td_release(dst_col);
     }

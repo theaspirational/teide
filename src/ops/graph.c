@@ -398,9 +398,9 @@ static td_op_t* make_binary(td_graph_t* g, uint16_t opcode, td_op_t* a, td_op_t*
     return n;
 }
 
-/* Type promotion: BOOL < U8 < I16 < I32 < I64 < F64 */
+/* Type promotion: BOOL < U8 < I16 < I32 < I64 < F64.
+ * TD_STR is not promotable — arithmetic on strings is rejected at exec time. */
 static int8_t promote(int8_t a, int8_t b) {
-    if (a == TD_STR || b == TD_STR) return TD_STR;
     if (a == TD_F64 || b == TD_F64) return TD_F64;
     if (a == TD_I64 || b == TD_I64 || a == TD_SYM || b == TD_SYM ||
         a == TD_TIMESTAMP || b == TD_TIMESTAMP) return TD_I64;
