@@ -123,6 +123,9 @@ extern "C" {
 /* Unified dictionary-encoded string column (adaptive width) */
 #define TD_SYM       20
 
+/* Variable-length string column (inline + pool) */
+#define TD_STR       21
+
 /* Symbol width encoding (lower 2 bits of attrs when type == TD_SYM) */
 #define TD_SYM_W_MASK   0x03
 #define TD_SYM_W8       0x00   /* uint8_t  indices — dict ≤ 255 entries */
@@ -154,7 +157,8 @@ extern "C" {
 #define TD_ATOM_I32        (-TD_I32)
 #define TD_ATOM_I64        (-TD_I64)
 #define TD_ATOM_F64        (-TD_F64)
-#define TD_ATOM_STR        (-8)
+#define TD_ATOM_F32        (-TD_F32)
+#define TD_ATOM_STR        (-TD_STR)
 #define TD_ATOM_DATE       (-TD_DATE)
 #define TD_ATOM_TIME       (-TD_TIME)
 #define TD_ATOM_TIMESTAMP  (-TD_TIMESTAMP)
@@ -162,7 +166,7 @@ extern "C" {
 #define TD_ATOM_SYM        (-TD_SYM)
 
 /* Number of types (positive range): must be > max type ID */
-#define TD_TYPE_COUNT 21
+#define TD_TYPE_COUNT 22
 
 /* ===== Attribute Flags ===== */
 
@@ -229,6 +233,7 @@ typedef union TD_ALIGN(32) td_t {
             uint8_t  nullmap[16];
             struct { union td_t* slice_parent; int64_t slice_offset; };
             struct { union td_t* ext_nullmap;  union td_t* sym_dict; };
+            struct { union td_t* str_ext_null; union td_t* str_pool; };
         };
         /* Bytes 16-31: metadata + value */
         uint8_t  mmod;       /* 0=heap, 1=file-mmap */
@@ -300,6 +305,54 @@ static inline void td_write_sym(void* data, int64_t row, uint64_t val, int8_t ty
         case TD_SYM_W32: ((uint32_t*)data)[row] = (uint32_t)val; break;
         case TD_SYM_W64: ((int64_t*)data)[row]  = (int64_t)val;  break;
     }
+}
+
+/* ===== Inline String Element (16 bytes) ===== */
+
+typedef union {
+    struct { uint32_t len; char     data[12]; };      /* inline: len <= 12 */
+    struct { uint32_t len_; char    prefix[4];        /* pooled: len > 12  */
+             uint32_t pool_off; uint32_t _pad; };
+} td_str_t;
+
+#define TD_STR_INLINE_MAX 12
+
+static inline bool td_str_is_inline(const td_str_t* s) {
+    return s->len <= TD_STR_INLINE_MAX;
+}
+
+/* Resolve string data pointer for a td_str_t element.
+ * pool_base: base of string pool (NULL if all strings are inline) */
+static inline const char* td_str_t_ptr(const td_str_t* s, const char* pool_base) {
+    if (s->len == 0) return "";
+    if (td_str_is_inline(s)) return s->data;
+    return pool_base + s->pool_off;
+}
+
+/* Equality: fast reject on len, then prefix, then full compare.
+ * pool_a/pool_b: pool bases for elements a and b respectively (NULL if inline) */
+static inline bool td_str_t_eq(const td_str_t* a, const char* pool_a,
+                               const td_str_t* b, const char* pool_b) {
+    if (a->len != b->len) return false;
+    if (a->len == 0) return true;
+    if (td_str_is_inline(a)) {
+        return memcmp(a->data, b->data, a->len) == 0;
+    }
+    /* Both pooled: check prefix first */
+    if (memcmp(a->prefix, b->prefix, 4) != 0) return false;
+    return memcmp(pool_a + a->pool_off, pool_b + b->pool_off, a->len) == 0;
+}
+
+/* Ordering: lexicographic, shorter string is less on prefix tie.
+ * pool_a/pool_b: pool bases for elements a and b respectively (NULL if inline) */
+static inline int td_str_t_cmp(const td_str_t* a, const char* pool_a,
+                               const td_str_t* b, const char* pool_b) {
+    const char* pa = td_str_t_ptr(a, pool_a);
+    const char* pb = td_str_t_ptr(b, pool_b);
+    uint32_t min_len = a->len < b->len ? a->len : b->len;
+    int r = memcmp(pa, pb, min_len);
+    if (r != 0) return r;
+    return (a->len > b->len) - (a->len < b->len);
 }
 
 /* Determine optimal SYM width for a given dictionary size */
@@ -750,6 +803,13 @@ td_t* td_vec_from_raw(int8_t type, const void* data, int64_t count);
 /* Null bitmap ops */
 void  td_vec_set_null(td_t* vec, int64_t idx, bool is_null);
 bool  td_vec_is_null(td_t* vec, int64_t idx);
+
+/* ===== String Vector API ===== */
+
+td_t* td_str_vec_append(td_t* vec, const char* s, size_t len);
+const char* td_str_vec_get(td_t* vec, int64_t idx, size_t* out_len);
+td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len);
+td_t* td_str_vec_compact(td_t* vec);
 
 /* ===== String API ===== */
 

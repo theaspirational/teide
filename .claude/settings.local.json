@@ -26,7 +26,17 @@
       "Bash(./build/test_teide --suite /csv 2>&1)",
       "Bash(./test_teide --suite /csv/null_i64)",
       "Bash(/home/hetoku/data/work/teidedb/teide/.worktrees/csv-null-handling/build/test_teide --suite /csv 2>&1)",
-      "Bash(./build/test_teide --suite /csv)"
+      "Bash(./build/test_teide --suite /csv)",
+      "Bash(/tmp/bench_arena /tmp/teide_100k_100sym.csv)",
+      "Bash(/tmp/bench_arena /tmp/teide_1m_100sym.csv)",
+      "Bash(/tmp/bench_arena /tmp/teide_1m_100ksym.csv)",
+      "Bash(/tmp/bench_arena /tmp/teide_1m_1msym.csv)",
+      "Bash(callgrind_annotate /tmp/callgrind_arena.out)",
+      "Bash(callgrind_annotate --auto=yes /tmp/callgrind_arena.out)",
+      "Bash(sort -t'\\(' -k2 -rn)",
+      "WebFetch(domain:duckdb.org)",
+      "WebFetch(domain:15721.courses.cs.cmu.edu)",
+      "WebFetch(domain:endjin.com)"
     ]
   },
   "enableAllProjectMcpServers": true,
