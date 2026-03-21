@@ -403,7 +403,7 @@ git commit -m "fix: string ops propagate nulls — UPPER/LOWER/TRIM/STRLEN/SUBST
 
 ### Task 3: Add dst type check in col_propagate_str_pool
 
-- [ ] Implement fix
+- [x] Implement fix
 
 One-line defensive fix. If `dst` is not TD_STR, writing to `dst->str_pool` corrupts the `nullmap` union field.
 

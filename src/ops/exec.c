@@ -157,7 +157,7 @@ static inline td_t* col_vec_new(const td_t* src, int64_t cap) {
 /* Propagate str_pool from source to gathered result.
  * Source may be a slice — resolve to owner's pool. */
 static inline void col_propagate_str_pool(td_t* dst, const td_t* src) {
-    if (src->type != TD_STR) return;
+    if (src->type != TD_STR || dst->type != TD_STR) return;
     const td_t* owner = (src->attrs & TD_ATTR_SLICE) ? src->slice_parent : src;
     if (owner->str_pool) {
         if (dst->str_pool) td_release(dst->str_pool);
