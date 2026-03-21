@@ -10559,6 +10559,7 @@ static td_t* exec_string_unary(td_graph_t* g, td_op_t* op) {
             buf = (char*)scratch_alloc(&dyn_hdr, sl + 1);
             if (!buf) {
                 td_release(result);
+                td_release(input);
                 return TD_ERR_PTR(TD_ERR_OOM);
             }
         }
@@ -10770,6 +10771,7 @@ static td_t* exec_replace(td_graph_t* g, td_op_t* op) {
             buf = (char*)scratch_alloc(&dyn_hdr, worst);
             if (!buf) {
                 td_release(result);
+                td_release(input); td_release(from_v); td_release(to_v);
                 return TD_ERR_PTR(TD_ERR_OOM);
             }
         }
@@ -10876,7 +10878,9 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
         if (total >= sizeof(sbuf)) {
             buf = (char*)scratch_alloc(&dyn_hdr, total + 1);
             if (!buf) {
-                if (!out_str) td_release(result);
+                td_release(result);
+                for (int i = 0; i < n_args; i++) td_release(args[i]);
+                scratch_free(args_hdr);
                 return TD_ERR_PTR(TD_ERR_OOM);
             }
             buf_cap = total + 1;
