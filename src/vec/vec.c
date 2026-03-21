@@ -285,8 +285,10 @@ td_t* td_vec_concat(td_t* a, td_t* b) {
             }
         }
 
-        /* Propagate null bitmaps from a and b */
-        if ((a->attrs & TD_ATTR_HAS_NULLS) || (b->attrs & TD_ATTR_HAS_NULLS)) {
+        /* Propagate null bitmaps from a and b.
+         * Slices don't carry TD_ATTR_HAS_NULLS — check TD_ATTR_SLICE too. */
+        if ((a->attrs & (TD_ATTR_HAS_NULLS | TD_ATTR_SLICE)) ||
+            (b->attrs & (TD_ATTR_HAS_NULLS | TD_ATTR_SLICE))) {
             for (int64_t i = 0; i < a->len; i++) {
                 if (td_vec_is_null((td_t*)a, i))
                     td_vec_set_null(result, i, true);
@@ -302,8 +304,9 @@ td_t* td_vec_concat(td_t* a, td_t* b) {
 
     uint8_t a_esz = td_sym_elem_size(a->type, a->attrs);
     uint8_t b_esz = td_sym_elem_size(b->type, b->attrs);
-    /* Use the wider of the two widths for SYM columns */
-    uint8_t out_attrs = (a_esz >= b_esz) ? a->attrs : b->attrs;
+    /* Use the wider of the two widths for SYM columns — carry only width bits,
+     * not flags like TD_ATTR_SLICE or TD_ATTR_HAS_NULLS from inputs. */
+    uint8_t out_attrs = (a_esz >= b_esz) ? (a->attrs & TD_SYM_W_MASK) : (b->attrs & TD_SYM_W_MASK);
     uint8_t esz = (a_esz >= b_esz) ? a_esz : b_esz;
 
     int64_t total_len = a->len + b->len;
@@ -343,6 +346,20 @@ td_t* td_vec_concat(td_t* a, td_t* b) {
             td_data(b);
         memcpy((char*)td_data(result) + (size_t)a->len * esz, b_data,
                (size_t)b->len * esz);
+    }
+
+    /* Propagate null bitmaps from a and b.
+     * Slices don't carry TD_ATTR_HAS_NULLS — check TD_ATTR_SLICE too. */
+    if ((a->attrs & (TD_ATTR_HAS_NULLS | TD_ATTR_SLICE)) ||
+        (b->attrs & (TD_ATTR_HAS_NULLS | TD_ATTR_SLICE))) {
+        for (int64_t i = 0; i < a->len; i++) {
+            if (td_vec_is_null((td_t*)a, i))
+                td_vec_set_null(result, i, true);
+        }
+        for (int64_t i = 0; i < b->len; i++) {
+            if (td_vec_is_null((td_t*)b, i))
+                td_vec_set_null(result, a->len + i, true);
+        }
     }
 
     /* LIST/TABLE columns hold child pointers — retain them */
@@ -730,10 +747,15 @@ td_t* td_str_vec_compact(td_t* vec) {
     if (!vec || TD_IS_ERR(vec)) return vec;
     if (!str_pool_cow(vec)) return TD_ERR_PTR(TD_ERR_OOM);
 
-    int64_t pool_used = vec->str_pool->len;
-    uint32_t dead = str_pool_dead(vec);
-    if ((int64_t)dead > pool_used) dead = (uint32_t)pool_used;
-    size_t live_size = (size_t)(pool_used - dead);
+    /* Compute true live size by scanning elements — avoids overflow when
+     * the dead-byte counter (uint32_t) has saturated at UINT32_MAX. */
+    td_str_t* elems = (td_str_t*)td_data(vec);
+    size_t live_size = 0;
+    for (int64_t i = 0; i < vec->len; i++) {
+        if (td_vec_is_null(vec, i) || td_str_is_inline(&elems[i]) || elems[i].len == 0) continue;
+        live_size += elems[i].len;
+    }
+
     if (live_size == 0) {
         td_release(vec->str_pool);
         vec->str_pool = NULL;
@@ -750,7 +772,6 @@ td_t* td_str_vec_compact(td_t* vec) {
     char* new_base = (char*)td_data(new_pool);
     uint32_t write_off = 0;
 
-    td_str_t* elems = (td_str_t*)td_data(vec);
     for (int64_t i = 0; i < vec->len; i++) {
         if (td_vec_is_null(vec, i) || td_str_is_inline(&elems[i]) || elems[i].len == 0) continue;
 
@@ -782,6 +803,14 @@ td_t* td_embedding_new(int64_t nrows, int32_t dim) {
 bool td_vec_is_null(td_t* vec, int64_t idx) {
     if (!vec || TD_IS_ERR(vec)) return false;
     if (idx < 0 || idx >= vec->len) return false;
+
+    /* Slice: delegate to parent with adjusted index */
+    if (vec->attrs & TD_ATTR_SLICE) {
+        td_t* parent = vec->slice_parent;
+        int64_t pidx = vec->slice_offset + idx;
+        return td_vec_is_null(parent, pidx);
+    }
+
     if (!(vec->attrs & TD_ATTR_HAS_NULLS)) return false;
 
     if (vec->attrs & TD_ATTR_NULLMAP_EXT) {
