@@ -1374,6 +1374,11 @@ static void atom_to_str_t(td_t* atom, td_str_t* out, const char** out_pool) {
         sl = td_str_len(atom);
     } else if (atom->type == TD_STR) {
         /* Length-1 TD_STR vector used as scalar */
+        if (atom->len < 1) {
+            memset(out, 0, sizeof(td_str_t));
+            *out_pool = NULL;
+            return;
+        }
         const td_str_t* elems = (const td_str_t*)td_data(atom);
         *out = elems[0];
         *out_pool = atom->str_pool ? (const char*)td_data(atom->str_pool) : NULL;

@@ -159,7 +159,7 @@ A length-0 TD_STR vector classified as scalar reads `elems[0]` without bounds ch
 - Modify: `src/ops/exec.c:1375-1380` (atom_to_str_t)
 - Test: `test/test_exec.c`
 
-**Step 1: Write test**
+- [x] Step 1: Write test
 
 ```c
 static MunitResult test_exec_str_eq_empty_vec_scalar(const void* params, void* data) {
@@ -204,7 +204,7 @@ static MunitResult test_exec_str_eq_empty_vec_scalar(const void* params, void* d
 }
 ```
 
-**Step 2: Implement fix**
+- [x] Step 2: Implement fix
 
 In `src/ops/exec.c`, add a bounds check in `atom_to_str_t` for the TD_STR case (line 1375):
 
@@ -222,17 +222,17 @@ In `src/ops/exec.c`, add a bounds check in `atom_to_str_t` for the TD_STR case (
         return;
 ```
 
-**Step 3: Run tests**
+- [x] Step 3: Run tests
 
 Run: `cd build && cmake --build . && ./test_teide --suite /exec`
 Expected: PASS — no crash on empty TD_STR scalar
 
-**Step 4: Run full suite**
+- [x] Step 4: Run full suite
 
 Run: `cd build && ctest --output-on-failure`
 Expected: All pass
 
-**Step 5: Commit**
+- [x] Step 5: Commit
 
 ```bash
 git add src/ops/exec.c test/test_exec.c

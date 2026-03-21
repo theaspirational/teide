@@ -2753,6 +2753,47 @@ static MunitResult test_exec_str_eq_len1_broadcast(const void* params, void* dat
     return MUNIT_OK;
 }
 
+static MunitResult test_exec_str_eq_empty_vec_scalar(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    /* Table: name(3 rows), empty(0 rows — empty TD_STR vector as scalar) */
+    td_t* c0 = td_vec_new(TD_STR, 3);
+    c0 = td_str_vec_append(c0, "alice", 5);
+    c0 = td_str_vec_append(c0, "bob", 3);
+    c0 = td_str_vec_append(c0, "", 0);
+
+    td_t* c1 = td_vec_new(TD_STR, 0);
+
+    int64_t name_id  = td_sym_intern("name", 4);
+    int64_t empty_id = td_sym_intern("empty", 5);
+
+    td_t* tbl = td_table_new(2);
+    tbl = td_table_add_col(tbl, name_id, c0);
+    tbl = td_table_add_col(tbl, empty_id, c1);
+    td_release(c0);
+    td_release(c1);
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* name  = td_scan(g, "name");
+    td_op_t* empty = td_scan(g, "empty");
+    td_op_t* eq    = td_eq(g, name, empty);
+    td_t* result   = td_execute(g, eq);
+
+    /* Should not crash — either returns error or produces result */
+    if (!TD_IS_ERR(result)) {
+        munit_assert_int(result->type, ==, TD_BOOL);
+        td_release(result);
+    }
+
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* ======================================================================
  * Suite
  * ====================================================================== */
@@ -2814,6 +2855,7 @@ static MunitTest exec_tests[] = {
     { "/str_if",         test_exec_str_if,            NULL, NULL, 0, NULL },
     { "/str_if_scalar",  test_exec_str_if_scalar,     NULL, NULL, 0, NULL },
     { "/str_eq_len1_broadcast", test_exec_str_eq_len1_broadcast, NULL, NULL, 0, NULL },
+    { "/str_eq_empty_vec_scalar", test_exec_str_eq_empty_vec_scalar, NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 
