@@ -768,6 +768,62 @@ static MunitResult test_str_vec_concat_vecs(const void* params, void* fixture) {
 
 /* ---- Suite definition -------------------------------------------------- */
 
+static MunitResult test_str_t_hash_inline(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "hello", 5);
+    v = td_str_vec_append(v, "hello", 5);
+    v = td_str_vec_append(v, "world", 5);
+
+    td_str_t* elems = (td_str_t*)td_data(v);
+    uint64_t h0 = td_str_t_hash(&elems[0], NULL);
+    uint64_t h1 = td_str_t_hash(&elems[1], NULL);
+    uint64_t h2 = td_str_t_hash(&elems[2], NULL);
+
+    /* Same strings -> same hash */
+    munit_assert(h0 == h1);
+    /* Different strings -> different hash (extremely likely) */
+    munit_assert(h0 != h2);
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_t_hash_pooled(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "this is a long string!", 22);
+    v = td_str_vec_append(v, "this is a long string!", 22);
+    v = td_str_vec_append(v, "different long string!", 22);
+
+    td_str_t* elems = (td_str_t*)td_data(v);
+    const char* pool = (const char*)td_data(v->str_pool);
+    uint64_t h0 = td_str_t_hash(&elems[0], pool);
+    uint64_t h1 = td_str_t_hash(&elems[1], pool);
+    uint64_t h2 = td_str_t_hash(&elems[2], pool);
+
+    munit_assert(h0 == h1);
+    munit_assert(h0 != h2);
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_t_hash_empty(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 2);
+    v = td_str_vec_append(v, "", 0);
+    v = td_str_vec_append(v, "", 0);
+
+    td_str_t* elems = (td_str_t*)td_data(v);
+    uint64_t h0 = td_str_t_hash(&elems[0], NULL);
+    uint64_t h1 = td_str_t_hash(&elems[1], NULL);
+    munit_assert(h0 == h1);
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
 static MunitTest str_tests[] = {
     { "/ptr_sso",       test_str_ptr_sso,       str_setup, str_teardown, 0, NULL },
     { "/ptr_long",      test_str_ptr_long,       str_setup, str_teardown, 0, NULL },
@@ -803,6 +859,9 @@ static MunitTest str_tests[] = {
     { "/vec_grow",             test_str_vec_grow,             str_setup, str_teardown, 0, NULL },
     { "/vec_slice",            test_str_vec_slice,            str_setup, str_teardown, 0, NULL },
     { "/vec_concat",           test_str_vec_concat_vecs,      str_setup, str_teardown, 0, NULL },
+    { "/t_hash_inline",        test_str_t_hash_inline,        str_setup, str_teardown, 0, NULL },
+    { "/t_hash_pooled",        test_str_t_hash_pooled,        str_setup, str_teardown, 0, NULL },
+    { "/t_hash_empty",         test_str_t_hash_empty,         str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

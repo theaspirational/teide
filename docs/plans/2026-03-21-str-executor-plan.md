@@ -206,7 +206,7 @@ git commit -m "feat: TD_STR slice and concat — zero-copy slices, pool-merging 
 
 ---
 
-### Task 2: td_str_t_hash and str_elem helper in td.h
+### Task 2: td_str_t_hash and str_elem helper in td.h [DONE]
 
 These shared helpers are needed by multiple executor tasks. Add them first.
 

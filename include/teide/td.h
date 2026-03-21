@@ -355,6 +355,20 @@ static inline int td_str_t_cmp(const td_str_t* a, const char* pool_a,
     return (a->len > b->len) - (a->len < b->len);
 }
 
+/* Hash a td_str_t element.  Uses FNV-1a which is self-contained and fast for
+ * the typical short-to-medium strings stored in td_str_t.
+ * pool_base: pool base pointer for pooled strings (NULL when inline-only). */
+static inline uint64_t td_str_t_hash(const td_str_t* s, const char* pool_base) {
+    if (s->len == 0) return 0x9E3779B97F4A7C15ULL; /* golden ratio constant for empty */
+    const char* p = td_str_is_inline(s) ? s->data : pool_base + s->pool_off;
+    uint64_t h = 0xcbf29ce484222325ULL;
+    for (uint32_t i = 0; i < s->len; i++) {
+        h ^= (uint64_t)(unsigned char)p[i];
+        h *= 0x100000001b3ULL;
+    }
+    return h;
+}
+
 /* Determine optimal SYM width for a given dictionary size */
 static inline uint8_t td_sym_dict_width(int64_t dict_size) {
     if (dict_size <= 255)        return TD_SYM_W8;
