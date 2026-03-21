@@ -2515,6 +2515,78 @@ static MunitResult test_exec_str_concat(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+static MunitResult test_exec_str_if(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    /* IF(name == "hello", name, UPPER(name)) — both branches are TD_STR */
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* lit = td_const_str(g, "hello");
+    td_op_t* cond = td_eq(g, name, lit);
+
+    td_op_t* then_col = td_scan(g, "name");
+    td_op_t* else_col = td_upper(g, td_scan(g, "name"));
+    td_op_t* if_op = td_if(g, cond, then_col, else_col);
+    td_t* result = td_execute(g, if_op);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_STR);
+    munit_assert_int(result->len, ==, 5);
+
+    size_t len;
+    /* row 0: "hello" == "hello" → true → "hello" */
+    const char* s0 = td_str_vec_get(result, 0, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, s0, "hello");
+
+    /* row 1: "WORLD" != "hello" → false → UPPER("WORLD") = "WORLD" */
+    const char* s1 = td_str_vec_get(result, 1, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, s1, "WORLD");
+
+    /* row 2: "  foo  " != "hello" → false → UPPER("  foo  ") = "  FOO  " */
+    const char* s2 = td_str_vec_get(result, 2, &len);
+    munit_assert_size(len, ==, 7);
+    munit_assert_memory_equal(7, s2, "  FOO  ");
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+static MunitResult test_exec_str_if_scalar(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    /* IF(name == "hello", "YES", "NO") — scalar SYM branches, STR condition column */
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* lit = td_const_str(g, "hello");
+    td_op_t* cond = td_eq(g, name, lit);
+    td_op_t* then_v = td_const_str(g, "YES");
+    td_op_t* else_v = td_const_str(g, "NO");
+    td_op_t* if_op = td_if(g, cond, then_v, else_v);
+    td_t* result = td_execute(g, if_op);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->len, ==, 5);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* ======================================================================
  * Suite
  * ====================================================================== */
@@ -2570,6 +2642,8 @@ static MunitTest exec_tests[] = {
     { "/str_substr",     test_exec_str_substr,        NULL, NULL, 0, NULL },
     { "/str_replace",    test_exec_str_replace,       NULL, NULL, 0, NULL },
     { "/str_concat",     test_exec_str_concat,        NULL, NULL, 0, NULL },
+    { "/str_if",         test_exec_str_if,            NULL, NULL, 0, NULL },
+    { "/str_if_scalar",  test_exec_str_if_scalar,     NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 

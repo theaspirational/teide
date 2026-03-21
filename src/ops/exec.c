@@ -10153,6 +10153,56 @@ static td_t* exec_if(td_graph_t* g, td_op_t* op) {
         for (int64_t i = 0; i < len; i++)
             dst[i] = cond_p[i] ? (t_arr ? t_arr[i] : t_scalar)
                                : (e_arr ? e_arr[i] : e_scalar);
+    } else if (out_type == TD_STR) {
+        /* TD_STR: resolve each side to string data and td_str_vec_append.
+         * Scalars may be TD_ATOM_STR or TD_SYM atoms. */
+        result->len = 0; /* td_str_vec_append manages len */
+        for (int64_t i = 0; i < len; i++) {
+            const char* sp;
+            size_t sl;
+            if (cond_p[i]) {
+                if (then_scalar) {
+                    if (then_v->type == TD_ATOM_STR) {
+                        sp = td_str_ptr(then_v);
+                        sl = td_str_len(then_v);
+                    } else if (TD_IS_SYM(then_v->type)) {
+                        td_t* s = td_sym_str(then_v->i64);
+                        sp = s ? td_str_ptr(s) : "";
+                        sl = s ? td_str_len(s) : 0;
+                    } else { sp = ""; sl = 0; }
+                } else if (then_v->type == TD_STR) {
+                    sp = td_str_vec_get(then_v, i, &sl);
+                    if (!sp) { sp = ""; sl = 0; }
+                } else {
+                    /* TD_SYM column */
+                    int64_t sid = td_read_sym(td_data(then_v), i, then_v->type, then_v->attrs);
+                    td_t* sa = td_sym_str(sid);
+                    sp = sa ? td_str_ptr(sa) : "";
+                    sl = sa ? td_str_len(sa) : 0;
+                }
+            } else {
+                if (else_scalar) {
+                    if (else_v->type == TD_ATOM_STR) {
+                        sp = td_str_ptr(else_v);
+                        sl = td_str_len(else_v);
+                    } else if (TD_IS_SYM(else_v->type)) {
+                        td_t* s = td_sym_str(else_v->i64);
+                        sp = s ? td_str_ptr(s) : "";
+                        sl = s ? td_str_len(s) : 0;
+                    } else { sp = ""; sl = 0; }
+                } else if (else_v->type == TD_STR) {
+                    sp = td_str_vec_get(else_v, i, &sl);
+                    if (!sp) { sp = ""; sl = 0; }
+                } else {
+                    /* TD_SYM column */
+                    int64_t sid = td_read_sym(td_data(else_v), i, else_v->type, else_v->attrs);
+                    td_t* sa = td_sym_str(sid);
+                    sp = sa ? td_str_ptr(sa) : "";
+                    sl = sa ? td_str_len(sa) : 0;
+                }
+            }
+            result = td_str_vec_append(result, sp, sl);
+        }
     } else if (out_type == TD_SYM) {
         /* SYM columns may have narrow widths (W8/W16/W32) — use td_read_sym.
          * Scalars may be string atoms that need interning. Output is always W64. */

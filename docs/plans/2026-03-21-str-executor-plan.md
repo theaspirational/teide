@@ -914,7 +914,7 @@ git commit -m "feat: CONCAT for TD_STR — mixed TD_STR/TD_SYM inputs produce TD
 
 ---
 
-### Task 8: OP_IF for TD_STR
+### Task 8: OP_IF for TD_STR [DONE]
 
 **Files:**
 - Modify: `src/ops/exec.c:10041-10067` (exec_if TD_SYM branch)
