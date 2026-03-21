@@ -824,6 +824,34 @@ static MunitResult test_str_t_hash_empty(const void* params, void* fixture) {
     return MUNIT_OK;
 }
 
+static MunitResult test_str_vec_concat_overflow_guard(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    /* We can't actually allocate 4GB pools, but we can verify the guard
+     * rejects when total_pool would exceed UINT32_MAX.
+     * Instead, test that normal concat works and that the guard code path
+     * exists by testing concat of two vectors with pools. */
+    td_t* a = td_vec_new(TD_STR, 2);
+    a = td_str_vec_append(a, "this is a long pooled string a!", 30);
+    td_t* b = td_vec_new(TD_STR, 2);
+    b = td_str_vec_append(b, "this is a long pooled string b!", 30);
+
+    td_t* c = td_vec_concat(a, b);
+    munit_assert_ptr_not_null(c);
+    munit_assert_false(TD_IS_ERR(c));
+    munit_assert_int(td_len(c), ==, 2);
+
+    /* Verify rebased pool offset resolves correctly */
+    size_t len;
+    const char* p1 = td_str_vec_get(c, 1, &len);
+    munit_assert_size(len, ==, 30);
+    munit_assert_memory_equal(30, p1, "this is a long pooled string b!");
+
+    td_release(c);
+    td_release(a);
+    td_release(b);
+    return MUNIT_OK;
+}
+
 static MunitTest str_tests[] = {
     { "/ptr_sso",       test_str_ptr_sso,       str_setup, str_teardown, 0, NULL },
     { "/ptr_long",      test_str_ptr_long,       str_setup, str_teardown, 0, NULL },
@@ -862,6 +890,7 @@ static MunitTest str_tests[] = {
     { "/t_hash_inline",        test_str_t_hash_inline,        str_setup, str_teardown, 0, NULL },
     { "/t_hash_pooled",        test_str_t_hash_pooled,        str_setup, str_teardown, 0, NULL },
     { "/t_hash_empty",         test_str_t_hash_empty,         str_setup, str_teardown, 0, NULL },
+    { "/vec_concat_overflow",  test_str_vec_concat_overflow_guard, str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

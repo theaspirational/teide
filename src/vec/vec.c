@@ -255,6 +255,12 @@ td_t* td_vec_concat(td_t* a, td_t* b) {
         int64_t b_pool_size = (b_pool_owner->str_pool) ? b_pool_owner->str_pool->len : 0;
         int64_t total_pool = a_pool_size + b_pool_size;
 
+        /* Guard: total pool must fit in uint32_t for pool_off rebasing */
+        if (total_pool > (int64_t)UINT32_MAX) {
+            td_release(result);
+            return TD_ERR_PTR(TD_ERR_RANGE);
+        }
+
         if (total_pool > 0) {
             result->str_pool = td_alloc((size_t)total_pool);
             if (!result->str_pool || TD_IS_ERR(result->str_pool)) {
@@ -272,10 +278,6 @@ td_t* td_vec_concat(td_t* a, td_t* b) {
         }
 
         /* Copy b's elements, rebasing pool offsets */
-        if (a_pool_size > UINT32_MAX) {
-            td_release(result);
-            return TD_ERR_PTR(TD_ERR_RANGE);
-        }
         for (int64_t i = 0; i < b->len; i++) {
             dst[a->len + i] = b_elems[i];
             if (!td_str_is_inline(&b_elems[i]) && b_elems[i].len > 0) {
