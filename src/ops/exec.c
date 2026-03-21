@@ -10559,6 +10559,18 @@ static td_t* exec_string_unary(td_graph_t* g, td_op_t* op) {
 
     uint16_t opc = op->opcode;
     for (int64_t i = 0; i < len; i++) {
+        /* Propagate null */
+        if (td_vec_is_null((td_t*)input, i)) {
+            if (is_str) {
+                result = td_str_vec_append(result, "", 0);
+                if (TD_IS_ERR(result)) break;
+                td_vec_set_null(result, result->len - 1, true);
+            } else {
+                sym_dst[i] = 0;
+                td_vec_set_null(result, i, true);
+            }
+            continue;
+        }
         const char* sp; size_t sl;
         if (is_str) {
             sp = td_str_t_ptr(&str_elems[i], str_pool);
@@ -10618,10 +10630,21 @@ static td_t* exec_strlen(td_graph_t* g, td_op_t* op) {
     if (input->type == TD_STR) {
         const td_str_t* elems; const char* pool;
         str_resolve(input, &elems, &pool);
-        for (int64_t i = 0; i < len; i++)
+        for (int64_t i = 0; i < len; i++) {
+            if (td_vec_is_null((td_t*)input, i)) {
+                dst[i] = 0;
+                td_vec_set_null(result, i, true);
+                continue;
+            }
             dst[i] = (int64_t)elems[i].len;
+        }
     } else {
         for (int64_t i = 0; i < len; i++) {
+            if (td_vec_is_null((td_t*)input, i)) {
+                dst[i] = 0;
+                td_vec_set_null(result, i, true);
+                continue;
+            }
             const char* sp; size_t sl;
             sym_elem(input, i, &sp, &sl);
             dst[i] = (int64_t)sl;
@@ -10694,6 +10717,18 @@ static td_t* exec_substr(td_graph_t* g, td_op_t* op) {
     else l_data = (const int64_t*)td_data(len_v);
 
     for (int64_t i = 0; i < nrows; i++) {
+        /* Propagate null */
+        if (td_vec_is_null((td_t*)input, i)) {
+            if (is_str) {
+                result = td_str_vec_append(result, "", 0);
+                if (TD_IS_ERR(result)) break;
+                td_vec_set_null(result, result->len - 1, true);
+            } else {
+                sym_dst[i] = 0;
+                td_vec_set_null(result, i, true);
+            }
+            continue;
+        }
         const char* sp; size_t sl;
         if (is_str) {
             sp = td_str_t_ptr(&str_elems[i], str_pool);
@@ -10760,6 +10795,18 @@ static td_t* exec_replace(td_graph_t* g, td_op_t* op) {
     if (is_str) str_resolve(input, &str_elems, &str_pool);
 
     for (int64_t i = 0; i < nrows; i++) {
+        /* Propagate null */
+        if (td_vec_is_null((td_t*)input, i)) {
+            if (is_str) {
+                result = td_str_vec_append(result, "", 0);
+                if (TD_IS_ERR(result)) break;
+                td_vec_set_null(result, result->len - 1, true);
+            } else {
+                sym_dst[i] = 0;
+                td_vec_set_null(result, i, true);
+            }
+            continue;
+        }
         const char* sp; size_t sl;
         if (is_str) {
             sp = td_str_t_ptr(&str_elems[i], str_pool);
@@ -10870,6 +10917,25 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
     int64_t* dst = out_str ? NULL : (int64_t*)td_data(result);
 
     for (int64_t r = 0; r < nrows; r++) {
+        /* Check if any arg is null at this row */
+        bool any_null = false;
+        for (int a = 0; a < n_args; a++) {
+            if (!td_is_atom(args[a]) && td_vec_is_null((td_t*)args[a], r < args[a]->len ? r : 0)) {
+                any_null = true;
+                break;
+            }
+        }
+        if (any_null) {
+            if (out_str) {
+                result = td_str_vec_append(result, "", 0);
+                if (TD_IS_ERR(result)) break;
+                td_vec_set_null(result, result->len - 1, true);
+            } else {
+                dst[r] = 0;
+                td_vec_set_null(result, r, true);
+            }
+            continue;
+        }
         /* Pre-scan to compute total concat length for this row */
         size_t total = 0;
         for (int a = 0; a < n_args; a++) {
