@@ -2199,6 +2199,36 @@ static MunitResult test_exec_str_lt(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+/* ---- TD_STR STRLEN ---- */
+static MunitResult test_exec_str_strlen(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* slen = td_strlen(g, name);
+    td_t* result = td_execute(g, slen);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_I64);
+    munit_assert_int(result->len, ==, 5);
+    int64_t* d = (int64_t*)td_data(result);
+    munit_assert_int(d[0], ==, 5);   /* "hello" */
+    munit_assert_int(d[1], ==, 5);   /* "WORLD" */
+    munit_assert_int(d[2], ==, 7);   /* "  foo  " */
+    munit_assert_int(d[3], ==, 7);   /* "bar_baz" */
+    munit_assert_int(d[4], ==, 0);   /* "" */
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* ---- GRAPH DUMP (smoke test) ---- */
 static MunitResult test_graph_dump(const void* params, void* data) {
     (void)params; (void)data;
@@ -2272,6 +2302,7 @@ static MunitTest exec_tests[] = {
     { "/str_eq",         test_exec_str_eq,            NULL, NULL, 0, NULL },
     { "/str_ne",         test_exec_str_ne,            NULL, NULL, 0, NULL },
     { "/str_lt",         test_exec_str_lt,            NULL, NULL, 0, NULL },
+    { "/str_strlen",     test_exec_str_strlen,        NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 

@@ -515,7 +515,7 @@ git commit -m "feat: TD_STR binary comparisons — DuckDB-style 16-byte fast pat
 
 ---
 
-### Task 4: STRLEN for TD_STR
+### Task 4: STRLEN for TD_STR [DONE]
 
 Simplest string op — just reads `elem->len`.
 

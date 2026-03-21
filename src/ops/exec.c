@@ -10424,10 +10424,16 @@ static td_t* exec_strlen(td_graph_t* g, td_op_t* op) {
     result->len = len;
     int64_t* dst = (int64_t*)td_data(result);
 
-    for (int64_t i = 0; i < len; i++) {
-        const char* sp; size_t sl;
-        sym_elem(input, i, &sp, &sl);
-        dst[i] = (int64_t)sl;
+    if (input->type == TD_STR) {
+        const td_str_t* elems = (const td_str_t*)td_data(input);
+        for (int64_t i = 0; i < len; i++)
+            dst[i] = (int64_t)elems[i].len;
+    } else {
+        for (int64_t i = 0; i < len; i++) {
+            const char* sp; size_t sl;
+            sym_elem(input, i, &sp, &sl);
+            dst[i] = (int64_t)sl;
+        }
     }
     td_release(input);
     return result;
