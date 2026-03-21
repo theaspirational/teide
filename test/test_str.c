@@ -571,6 +571,38 @@ static MunitResult test_str_vec_compact_all_pool_dead(const void* params, void* 
     return MUNIT_OK;
 }
 
+/* ---- compact: saturated dead counter ----------------------------------- */
+
+static MunitResult test_str_vec_compact_saturated_dead(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+
+    /* Append one pooled string (>12 bytes so it goes to pool) */
+    v = td_str_vec_append(v, "this is a pooled string!", 24);
+
+    /* Force the dead-byte counter to UINT32_MAX to simulate saturation.
+     * The counter is stored in the first 4 bytes of str_pool->nullmap. */
+    munit_assert_ptr_not_null(v->str_pool);
+    uint32_t saturated = UINT32_MAX;
+    memcpy(v->str_pool->nullmap, &saturated, 4);
+
+    /* Compact must scan elements for true live size instead of using
+     * pool_used - dead (which would underflow). */
+    v = td_str_vec_compact(v);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+
+    /* The pooled string must survive compact */
+    munit_assert_ptr_not_null(v->str_pool);
+    size_t len;
+    const char* s = td_str_vec_get(v, 0, &len);
+    munit_assert_size(len, ==, 24);
+    munit_assert_memory_equal(24, s, "this is a pooled string!");
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
 /* ---- str_t_eq inline --------------------------------------------------- */
 
 static MunitResult test_str_t_eq_inline(const void* params, void* fixture) {
@@ -967,6 +999,7 @@ static MunitTest str_tests[] = {
     { "/vec_compact_noop",     test_str_vec_compact_noop,     str_setup, str_teardown, 0, NULL },
     { "/vec_compact_all_dead", test_str_vec_compact_all_dead, str_setup, str_teardown, 0, NULL },
     { "/vec_compact_all_pool_dead", test_str_vec_compact_all_pool_dead, str_setup, str_teardown, 0, NULL },
+    { "/vec_compact_saturated_dead", test_str_vec_compact_saturated_dead, str_setup, str_teardown, 0, NULL },
     { "/t_eq_inline",          test_str_t_eq_inline,          str_setup, str_teardown, 0, NULL },
     { "/t_eq_pooled",          test_str_t_eq_pooled,          str_setup, str_teardown, 0, NULL },
     { "/t_cmp_order",          test_str_t_cmp_order,          str_setup, str_teardown, 0, NULL },

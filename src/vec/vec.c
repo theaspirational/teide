@@ -304,8 +304,9 @@ td_t* td_vec_concat(td_t* a, td_t* b) {
 
     uint8_t a_esz = td_sym_elem_size(a->type, a->attrs);
     uint8_t b_esz = td_sym_elem_size(b->type, b->attrs);
-    /* Use the wider of the two widths for SYM columns */
-    uint8_t out_attrs = (a_esz >= b_esz) ? a->attrs : b->attrs;
+    /* Use the wider of the two widths for SYM columns — carry only width bits,
+     * not flags like TD_ATTR_SLICE or TD_ATTR_HAS_NULLS from inputs. */
+    uint8_t out_attrs = (a_esz >= b_esz) ? (a->attrs & TD_SYM_W_MASK) : (b->attrs & TD_SYM_W_MASK);
     uint8_t esz = (a_esz >= b_esz) ? a_esz : b_esz;
 
     int64_t total_len = a->len + b->len;
@@ -345,6 +346,20 @@ td_t* td_vec_concat(td_t* a, td_t* b) {
             td_data(b);
         memcpy((char*)td_data(result) + (size_t)a->len * esz, b_data,
                (size_t)b->len * esz);
+    }
+
+    /* Propagate null bitmaps from a and b.
+     * Slices don't carry TD_ATTR_HAS_NULLS — check TD_ATTR_SLICE too. */
+    if ((a->attrs & (TD_ATTR_HAS_NULLS | TD_ATTR_SLICE)) ||
+        (b->attrs & (TD_ATTR_HAS_NULLS | TD_ATTR_SLICE))) {
+        for (int64_t i = 0; i < a->len; i++) {
+            if (td_vec_is_null((td_t*)a, i))
+                td_vec_set_null(result, i, true);
+        }
+        for (int64_t i = 0; i < b->len; i++) {
+            if (td_vec_is_null((td_t*)b, i))
+                td_vec_set_null(result, a->len + i, true);
+        }
     }
 
     /* LIST/TABLE columns hold child pointers — retain them */
