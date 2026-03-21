@@ -543,6 +543,7 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
  * -------------------------------------------------------------------------- */
 
 const char* td_str_vec_get(td_t* vec, int64_t idx, size_t* out_len) {
+    if (out_len) *out_len = 0;
     if (!vec || TD_IS_ERR(vec) || vec->type != TD_STR) return NULL;
     if (idx < 0 || idx >= vec->len) return NULL;
 

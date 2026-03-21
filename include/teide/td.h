@@ -329,8 +329,10 @@ static inline const char* td_str_t_ptr(const td_str_t* s, const char* pool_base)
     return pool_base + s->pool_off;
 }
 
-/* Equality: fast reject on len, then prefix, then full compare */
-static inline bool td_str_t_eq(const td_str_t* a, const td_str_t* b, const char* pool_base) {
+/* Equality: fast reject on len, then prefix, then full compare.
+ * pool_a/pool_b: pool bases for elements a and b respectively (NULL if inline) */
+static inline bool td_str_t_eq(const td_str_t* a, const char* pool_a,
+                               const td_str_t* b, const char* pool_b) {
     if (a->len != b->len) return false;
     if (a->len == 0) return true;
     if (td_str_is_inline(a)) {
@@ -338,13 +340,15 @@ static inline bool td_str_t_eq(const td_str_t* a, const td_str_t* b, const char*
     }
     /* Both pooled: check prefix first */
     if (memcmp(a->prefix, b->prefix, 4) != 0) return false;
-    return memcmp(pool_base + a->pool_off, pool_base + b->pool_off, a->len) == 0;
+    return memcmp(pool_a + a->pool_off, pool_b + b->pool_off, a->len) == 0;
 }
 
-/* Ordering: lexicographic, shorter string is less on prefix tie */
-static inline int td_str_t_cmp(const td_str_t* a, const td_str_t* b, const char* pool_base) {
-    const char* pa = td_str_t_ptr(a, pool_base);
-    const char* pb = td_str_t_ptr(b, pool_base);
+/* Ordering: lexicographic, shorter string is less on prefix tie.
+ * pool_a/pool_b: pool bases for elements a and b respectively (NULL if inline) */
+static inline int td_str_t_cmp(const td_str_t* a, const char* pool_a,
+                               const td_str_t* b, const char* pool_b) {
+    const char* pa = td_str_t_ptr(a, pool_a);
+    const char* pb = td_str_t_ptr(b, pool_b);
     uint32_t min_len = a->len < b->len ? a->len : b->len;
     int r = memcmp(pa, pb, min_len);
     if (r != 0) return r;

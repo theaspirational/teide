@@ -441,8 +441,8 @@ static MunitResult test_str_vec_get_negative(const void* params, void* fixture) 
     size_t len = SIZE_MAX;
     const char* ptr = td_str_vec_get(v, -1, &len);
     munit_assert_null(ptr);
-    /* len should be untouched */
-    munit_assert_size(len, ==, SIZE_MAX);
+    /* len should be zeroed on error */
+    munit_assert_size(len, ==, 0);
 
     td_release(v);
     return MUNIT_OK;
@@ -551,8 +551,8 @@ static MunitResult test_str_t_eq_inline(const void* params, void* fixture) {
     v = td_str_vec_append(v, "world", 5);
 
     td_str_t* elems = (td_str_t*)td_data(v);
-    munit_assert_true(td_str_t_eq(&elems[0], &elems[1], NULL));
-    munit_assert_false(td_str_t_eq(&elems[0], &elems[2], NULL));
+    munit_assert_true(td_str_t_eq(&elems[0], NULL, &elems[1], NULL));
+    munit_assert_false(td_str_t_eq(&elems[0], NULL, &elems[2], NULL));
 
     td_release(v);
     return MUNIT_OK;
@@ -569,9 +569,9 @@ static MunitResult test_str_t_eq_pooled(const void* params, void* fixture) {
 
     td_str_t* elems = (td_str_t*)td_data(v);
     const char* pool = (const char*)td_data(v->str_pool);
-    munit_assert_true(td_str_t_eq(&elems[0], &elems[1], pool));
+    munit_assert_true(td_str_t_eq(&elems[0], pool, &elems[1], pool));
     /* Same prefix "a]lo" but different content */
-    munit_assert_false(td_str_t_eq(&elems[0], &elems[2], pool));
+    munit_assert_false(td_str_t_eq(&elems[0], pool, &elems[2], pool));
 
     td_release(v);
     return MUNIT_OK;
@@ -587,9 +587,9 @@ static MunitResult test_str_t_cmp_order(const void* params, void* fixture) {
     v = td_str_vec_append(v, "apple", 5);
 
     td_str_t* elems = (td_str_t*)td_data(v);
-    munit_assert_int(td_str_t_cmp(&elems[0], &elems[1], NULL), <, 0);
-    munit_assert_int(td_str_t_cmp(&elems[1], &elems[0], NULL), >, 0);
-    munit_assert_int(td_str_t_cmp(&elems[0], &elems[2], NULL), ==, 0);
+    munit_assert_int(td_str_t_cmp(&elems[0], NULL, &elems[1], NULL), <, 0);
+    munit_assert_int(td_str_t_cmp(&elems[1], NULL, &elems[0], NULL), >, 0);
+    munit_assert_int(td_str_t_cmp(&elems[0], NULL, &elems[2], NULL), ==, 0);
 
     td_release(v);
     return MUNIT_OK;
