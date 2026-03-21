@@ -269,9 +269,9 @@ A TD_STR vector with `len == 1` is classified as `l_scalar = true` but `l_atom_s
 - Modify: `src/ops/exec.c:1366-1390` (atom_to_str_t)
 - Test: `test/test_exec.c`
 
-- [ ] Write failing test
-- [ ] Implement l_atom_str and atom_to_str_t fixes
-- [ ] Run tests and verify pass
+- [x] Write failing test
+- [x] Implement l_atom_str and atom_to_str_t fixes
+- [x] Run tests and verify pass
 
 **Step 1: Write failing test**
 

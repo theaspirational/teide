@@ -2699,6 +2699,52 @@ static MunitResult test_exec_str_if_scalar(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+/* ---- TD_STR EQ with length-1 broadcast ---- */
+static MunitResult test_exec_str_eq_len1_broadcast(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    /* Build table: name(3 rows), tag(1 row — should broadcast) */
+    td_t* c0 = td_vec_new(TD_STR, 3);
+    c0 = td_str_vec_append(c0, "alice", 5);
+    c0 = td_str_vec_append(c0, "bob", 3);
+    c0 = td_str_vec_append(c0, "alice", 5);
+
+    td_t* c1 = td_vec_new(TD_STR, 1);
+    c1 = td_str_vec_append(c1, "alice", 5);
+
+    int64_t name_id = td_sym_intern("name", 4);
+    int64_t tag_id  = td_sym_intern("tag", 3);
+
+    td_t* tbl = td_table_new(2);
+    tbl = td_table_add_col(tbl, name_id, c0);
+    tbl = td_table_add_col(tbl, tag_id, c1);
+    td_release(c0);
+    td_release(c1);
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* tag  = td_scan(g, "tag");
+    td_op_t* eq   = td_eq(g, name, tag);
+    td_t* result  = td_execute(g, eq);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_BOOL);
+    munit_assert_int(result->len, ==, 3);
+    uint8_t* d = (uint8_t*)td_data(result);
+    munit_assert_int(d[0], ==, 1);  /* alice == alice */
+    munit_assert_int(d[1], ==, 0);  /* bob != alice */
+    munit_assert_int(d[2], ==, 1);  /* alice == alice */
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* ======================================================================
  * Suite
  * ====================================================================== */
@@ -2759,6 +2805,7 @@ static MunitTest exec_tests[] = {
     { "/str_concat",     test_exec_str_concat,        NULL, NULL, 0, NULL },
     { "/str_if",         test_exec_str_if,            NULL, NULL, 0, NULL },
     { "/str_if_scalar",  test_exec_str_if_scalar,     NULL, NULL, 0, NULL },
+    { "/str_eq_len1_broadcast", test_exec_str_eq_len1_broadcast, NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 

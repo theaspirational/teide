@@ -813,6 +813,7 @@ static bool expr_compile(td_graph_t* g, td_t* tbl, td_op_t* root, td_expr_t* out
                 td_t* col = td_table_get_col(tbl, ext->sym);
                 if (!col) return false;
                 if (col->type == TD_MAPCOMMON) return false;
+                if (col->type == TD_STR) return false; /* TD_STR needs string comparison path */
                 out->regs[r].kind = REG_SCAN;
                 if (TD_IS_PARTED(col->type)) {
                     int8_t base = (int8_t)TD_PARTED_BASETYPE(col->type);
@@ -1370,6 +1371,12 @@ static void atom_to_str_t(td_t* atom, td_str_t* out, const char** out_pool) {
     if (atom->type == TD_ATOM_STR) {
         sp = td_str_ptr(atom);
         sl = td_str_len(atom);
+    } else if (atom->type == TD_STR) {
+        /* Length-1 TD_STR vector used as scalar */
+        const td_str_t* elems = (const td_str_t*)td_data(atom);
+        *out = elems[0];
+        *out_pool = atom->str_pool ? (const char*)td_data(atom->str_pool) : NULL;
+        return;
     } else if (TD_IS_SYM(atom->type) && td_is_atom(atom)) {
         td_t* s = td_sym_str(atom->i64);
         sp = s ? td_str_ptr(s) : "";
@@ -1626,8 +1633,12 @@ static td_t* exec_elementwise_binary(td_graph_t* g, td_op_t* op, td_t* lhs, td_t
     {
         bool l_is_str = (!l_scalar && lhs->type == TD_STR);
         bool r_is_str = (!r_scalar && rhs->type == TD_STR);
-        bool l_atom_str = (l_scalar && (lhs->type == TD_ATOM_STR || (TD_IS_SYM(lhs->type) && td_is_atom(lhs))));
-        bool r_atom_str = (r_scalar && (rhs->type == TD_ATOM_STR || (TD_IS_SYM(rhs->type) && td_is_atom(rhs))));
+        bool l_atom_str = (l_scalar && (lhs->type == TD_ATOM_STR
+                          || lhs->type == TD_STR
+                          || (TD_IS_SYM(lhs->type) && td_is_atom(lhs))));
+        bool r_atom_str = (r_scalar && (rhs->type == TD_ATOM_STR
+                          || rhs->type == TD_STR
+                          || (TD_IS_SYM(rhs->type) && td_is_atom(rhs))));
 
         if (l_is_str || r_is_str) {
             /* TD_STR only supports comparison ops — reject arithmetic */
