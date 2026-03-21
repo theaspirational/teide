@@ -104,6 +104,7 @@ td_t* td_vec_append(td_t* vec, const void* elem) {
     if (!vec || TD_IS_ERR(vec)) return vec;
     if (vec->type <= 0 || vec->type >= TD_TYPE_COUNT)
         return TD_ERR_PTR(TD_ERR_TYPE);
+    if (vec->type == TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
 
     /* COW: if shared, copy first */
     vec = td_cow(vec);
@@ -144,6 +145,7 @@ td_t* td_vec_append(td_t* vec, const void* elem) {
 
 td_t* td_vec_set(td_t* vec, int64_t idx, const void* elem) {
     if (!vec || TD_IS_ERR(vec)) return vec;
+    if (vec->type == TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
     if (idx < 0 || idx >= vec->len)
         return TD_ERR_PTR(TD_ERR_RANGE);
 
@@ -221,6 +223,7 @@ td_t* td_vec_concat(td_t* a, td_t* b) {
     if (!b || TD_IS_ERR(b)) return b;
     if (a->type != b->type)
         return TD_ERR_PTR(TD_ERR_TYPE);
+    if (a->type == TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
 
     uint8_t a_esz = td_sym_elem_size(a->type, a->attrs);
     uint8_t b_esz = td_sym_elem_size(b->type, b->attrs);
@@ -285,6 +288,7 @@ td_t* td_vec_concat(td_t* a, td_t* b) {
 td_t* td_vec_from_raw(int8_t type, const void* data, int64_t count) {
     if (type <= 0 || type >= TD_TYPE_COUNT)
         return TD_ERR_PTR(TD_ERR_TYPE);
+    if (type == TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
     if (count < 0) return TD_ERR_PTR(TD_ERR_RANGE);
 
     /* TD_SYM defaults to W64 (global sym IDs) */
@@ -329,8 +333,10 @@ void td_vec_set_null(td_t* vec, int64_t idx, bool is_null) {
     if (is_null) vec->attrs |= TD_ATTR_HAS_NULLS;
 
     if (!(vec->attrs & TD_ATTR_NULLMAP_EXT)) {
-        /* Inline nullmap path (<=128 elements) */
-        if (idx < 128) {
+        /* TD_STR uses bytes 8-15 for str_pool — must skip inline nullmap
+         * and promote to external immediately to avoid aliasing corruption */
+        if (vec->type != TD_STR && idx < 128) {
+            /* Inline nullmap path (<=128 elements, non-STR types) */
             int byte_idx = (int)(idx / 8);
             int bit_idx = (int)(idx % 8);
             if (is_null)
@@ -344,11 +350,16 @@ void td_vec_set_null(td_t* vec, int64_t idx, bool is_null) {
         td_t* ext = td_vec_new(TD_U8, bitmap_len);
         if (!ext || TD_IS_ERR(ext)) return;
         ext->len = bitmap_len;
-        /* Copy existing inline bits */
-        memcpy(td_data(ext), vec->nullmap, 16);
-        /* Zero remaining bytes */
-        if (bitmap_len > 16)
-            memset((char*)td_data(ext) + 16, 0, (size_t)(bitmap_len - 16));
+        if (vec->type == TD_STR) {
+            /* TD_STR: nullmap bytes contain str_ext_null/str_pool, not bits */
+            memset(td_data(ext), 0, (size_t)bitmap_len);
+        } else {
+            /* Copy existing inline bits */
+            memcpy(td_data(ext), vec->nullmap, 16);
+            /* Zero remaining bytes */
+            if (bitmap_len > 16)
+                memset((char*)td_data(ext) + 16, 0, (size_t)(bitmap_len - 16));
+        }
         vec->attrs |= TD_ATTR_NULLMAP_EXT;
         vec->ext_nullmap = ext;
     }
@@ -432,6 +443,8 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
         vec = nv;
     }
 
+    if (len > UINT32_MAX) return TD_ERR_PTR(TD_ERR_RANGE);
+
     td_str_t* elem = &((td_str_t*)td_data(vec))[vec->len];
     memset(elem, 0, sizeof(td_str_t));
     elem->len = (uint32_t)len;
@@ -466,6 +479,9 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
             vec->str_pool = np;
         }
 
+        /* Guard against pool offset overflow */
+        if ((uint64_t)pool_used > UINT32_MAX) return TD_ERR_PTR(TD_ERR_OOM);
+
         /* Copy string into pool */
         char* pool_base = (char*)td_data(vec->str_pool);
         memcpy(pool_base + pool_used, s, len);
@@ -492,7 +508,7 @@ const char* td_str_vec_get(td_t* vec, int64_t idx, size_t* out_len) {
     if (idx < 0 || idx >= vec->len) return NULL;
 
     const td_str_t* elem = &((const td_str_t*)td_data(vec))[idx];
-    *out_len = elem->len;
+    if (out_len) *out_len = elem->len;
 
     if (elem->len == 0) return "";
     if (td_str_is_inline(elem)) return elem->data;
@@ -517,20 +533,20 @@ td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
     vec = td_cow(vec);
     if (!vec || TD_IS_ERR(vec)) return vec;
 
+    if (len > UINT32_MAX) return TD_ERR_PTR(TD_ERR_RANGE);
+
     td_str_t* elem = &((td_str_t*)td_data(vec))[idx];
 
-    /* Track dead bytes if old string was pooled */
-    if (!td_str_is_inline(elem) && elem->len > 0 && vec->str_pool) {
-        str_pool_add_dead(vec, elem->len);
-    }
-
-    memset(elem, 0, sizeof(td_str_t));
-    elem->len = (uint32_t)len;
-
     if (len <= TD_STR_INLINE_MAX) {
+        /* Track dead bytes if old string was pooled */
+        if (!td_str_is_inline(elem) && elem->len > 0 && vec->str_pool) {
+            str_pool_add_dead(vec, elem->len);
+        }
+        memset(elem, 0, sizeof(td_str_t));
+        elem->len = (uint32_t)len;
         if (len > 0) memcpy(elem->data, s, len);
     } else {
-        /* Pool path: allocate pool if needed, append string bytes */
+        /* Pool path: ensure pool exists and has space BEFORE modifying elem */
         if (!vec->str_pool) {
             size_t init_pool = len < 256 ? 256 : len * 2;
             vec->str_pool = td_alloc(init_pool);
@@ -557,8 +573,18 @@ td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
             vec->str_pool = np;
         }
 
+        /* Guard against pool offset overflow */
+        if ((uint64_t)pool_used > UINT32_MAX) return TD_ERR_PTR(TD_ERR_OOM);
+
+        /* Pool alloc succeeded — now safe to modify the element */
+        if (!td_str_is_inline(elem) && elem->len > 0 && vec->str_pool) {
+            str_pool_add_dead(vec, elem->len);
+        }
+
         char* pool_base = (char*)td_data(vec->str_pool);
         memcpy(pool_base + pool_used, s, len);
+        memset(elem, 0, sizeof(td_str_t));
+        elem->len = (uint32_t)len;
         memcpy(elem->prefix, s, 4);
         elem->pool_off = (uint32_t)pool_used;
         vec->str_pool->len = pool_used + (int64_t)len;

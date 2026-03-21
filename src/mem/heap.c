@@ -378,6 +378,9 @@ void td_retain_owned_refs(td_t* v) {
         v->ext_nullmap && !TD_IS_ERR(v->ext_nullmap))
         td_retain(v->ext_nullmap);
 
+    if (v->type == TD_STR && v->str_pool && !TD_IS_ERR(v->str_pool))
+        td_retain(v->str_pool);
+
     if (TD_IS_PARTED(v->type)) {
         int64_t n_segs = v->len;
         td_t** segs = (td_t**)td_data(v);
@@ -435,6 +438,10 @@ static void td_detach_owned_refs(td_t* v) {
     if (v->attrs & TD_ATTR_NULLMAP_EXT) {
         v->ext_nullmap = NULL;
         v->attrs &= (uint8_t)~TD_ATTR_NULLMAP_EXT;
+    }
+
+    if (v->type == TD_STR) {
+        v->str_pool = NULL;
     }
 
     if (TD_IS_PARTED(v->type)) {

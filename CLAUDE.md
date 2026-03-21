@@ -66,6 +66,7 @@ test/test_csr.c             Graph engine tests (42 tests)
 test/test_opt.c             Optimizer pass tests (filter reorder, predicate pushdown)
 test/test_store.c           Storage tests (file I/O, sym persistence, col bounds validation)
 test/test_sym.c             Sym table tests (save/load roundtrip, append-only, corruption)
+src/vec/vec.c               Vector operations — append, set, concat, slice, TD_STR string vectors with pool
 src/io/csv.{h,c}           CSV loader — mmap, parallel parse, null handling, sym merge
 bench/bench_csv*.c          CSV loading benchmarks (build with -DTEIDE_BENCH=ON)
 ```
