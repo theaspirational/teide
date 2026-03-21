@@ -329,8 +329,8 @@ void td_vec_set_null(td_t* vec, int64_t idx, bool is_null) {
     if (vec->attrs & TD_ATTR_SLICE) return; /* cannot set null on slice — COW first */
     if (idx < 0 || idx >= vec->len) return;
 
-    /* Mark HAS_NULLS if setting a null */
-    if (is_null) vec->attrs |= TD_ATTR_HAS_NULLS;
+    /* Mark HAS_NULLS if setting a null (defer for TD_STR until ext alloc succeeds) */
+    if (is_null && vec->type != TD_STR) vec->attrs |= TD_ATTR_HAS_NULLS;
 
     if (!(vec->attrs & TD_ATTR_NULLMAP_EXT)) {
         /* TD_STR uses bytes 8-15 for str_pool — must skip inline nullmap
@@ -361,6 +361,7 @@ void td_vec_set_null(td_t* vec, int64_t idx, bool is_null) {
                 memset((char*)td_data(ext) + 16, 0, (size_t)(bitmap_len - 16));
         }
         vec->attrs |= TD_ATTR_NULLMAP_EXT;
+        if (is_null) vec->attrs |= TD_ATTR_HAS_NULLS;
         vec->ext_nullmap = ext;
     }
 
@@ -422,10 +423,45 @@ static inline void str_pool_add_dead(td_t* vec, uint32_t bytes) {
 td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
     if (!vec || TD_IS_ERR(vec)) return vec;
     if (vec->type != TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
+    if (len > UINT32_MAX) return TD_ERR_PTR(TD_ERR_RANGE);
 
     vec = td_cow(vec);
     if (!vec || TD_IS_ERR(vec)) return vec;
 
+    /* Ensure pool has space BEFORE element array realloc, so failures
+     * don't leak the reallocated vector (caller still holds valid vec) */
+    int64_t pool_off = 0;
+    if (len > TD_STR_INLINE_MAX) {
+        if (!vec->str_pool) {
+            size_t init_pool = len < 256 ? 256 : len * 2;
+            vec->str_pool = td_alloc(init_pool);
+            if (!vec->str_pool || TD_IS_ERR(vec->str_pool)) {
+                vec->str_pool = NULL;
+                return TD_ERR_PTR(TD_ERR_OOM);
+            }
+            vec->str_pool->type = TD_CHAR;
+            vec->str_pool->len = 0;
+        }
+
+        int64_t pool_used = vec->str_pool->len;
+        size_t pool_cap = ((size_t)1 << vec->str_pool->order) - 32;
+        if ((size_t)pool_used + len > pool_cap) {
+            size_t need = (size_t)pool_used + len;
+            size_t new_cap = pool_cap;
+            while (new_cap < need) {
+                if (new_cap > SIZE_MAX / 2) return TD_ERR_PTR(TD_ERR_OOM);
+                new_cap *= 2;
+            }
+            td_t* np = td_scratch_realloc(vec->str_pool, new_cap);
+            if (!np || TD_IS_ERR(np)) return TD_ERR_PTR(TD_ERR_OOM);
+            vec->str_pool = np;
+        }
+
+        if ((uint64_t)pool_used > UINT32_MAX) return TD_ERR_PTR(TD_ERR_OOM);
+        pool_off = pool_used;
+    }
+
+    /* Grow element array if needed — pool is already ready */
     int64_t cap = vec_capacity(vec);
     if (vec->len >= cap) {
         size_t new_data_size = (size_t)(vec->len + 1) * sizeof(td_str_t);
@@ -443,8 +479,6 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
         vec = nv;
     }
 
-    if (len > UINT32_MAX) return TD_ERR_PTR(TD_ERR_RANGE);
-
     td_str_t* elem = &((td_str_t*)td_data(vec))[vec->len];
     memset(elem, 0, sizeof(td_str_t));
     elem->len = (uint32_t)len;
@@ -452,44 +486,13 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
     if (len <= TD_STR_INLINE_MAX) {
         if (len > 0) memcpy(elem->data, s, len);
     } else {
-        /* Pool path: allocate pool if needed, append string bytes */
-        if (!vec->str_pool) {
-            size_t init_pool = len < 256 ? 256 : len * 2;
-            vec->str_pool = td_alloc(init_pool);
-            if (!vec->str_pool || TD_IS_ERR(vec->str_pool)) {
-                vec->str_pool = NULL;
-                return TD_ERR_PTR(TD_ERR_OOM);
-            }
-            vec->str_pool->type = TD_CHAR;
-            vec->str_pool->len = 0;
-        }
-
-        /* Grow pool if needed */
-        int64_t pool_used = vec->str_pool->len;
-        size_t pool_cap = ((size_t)1 << vec->str_pool->order) - 32;
-        if ((size_t)pool_used + len > pool_cap) {
-            size_t need = (size_t)pool_used + len;
-            size_t new_cap = pool_cap;
-            while (new_cap < need) {
-                if (new_cap > SIZE_MAX / 2) return TD_ERR_PTR(TD_ERR_OOM);
-                new_cap *= 2;
-            }
-            td_t* np = td_scratch_realloc(vec->str_pool, new_cap);
-            if (!np || TD_IS_ERR(np)) return TD_ERR_PTR(TD_ERR_OOM);
-            vec->str_pool = np;
-        }
-
-        /* Guard against pool offset overflow */
-        if ((uint64_t)pool_used > UINT32_MAX) return TD_ERR_PTR(TD_ERR_OOM);
-
-        /* Copy string into pool */
+        /* Copy string into pool (already allocated above) */
         char* pool_base = (char*)td_data(vec->str_pool);
-        memcpy(pool_base + pool_used, s, len);
+        memcpy(pool_base + pool_off, s, len);
 
-        /* Fill element: prefix + offset */
         memcpy(elem->prefix, s, 4);
-        elem->pool_off = (uint32_t)pool_used;
-        vec->str_pool->len = pool_used + (int64_t)len;
+        elem->pool_off = (uint32_t)pool_off;
+        vec->str_pool->len = pool_off + (int64_t)len;
     }
 
     vec->len++;
@@ -546,13 +549,15 @@ td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
         elem->len = (uint32_t)len;
         if (len > 0) memcpy(elem->data, s, len);
     } else {
-        /* Pool path: ensure pool exists and has space BEFORE modifying elem */
+        /* Pool path: ensure pool exists and has space BEFORE modifying elem.
+         * On pool failure, return vec unchanged (set didn't happen) to avoid
+         * leaking the COW'd vector — caller retains a valid pointer. */
         if (!vec->str_pool) {
             size_t init_pool = len < 256 ? 256 : len * 2;
             vec->str_pool = td_alloc(init_pool);
             if (!vec->str_pool || TD_IS_ERR(vec->str_pool)) {
                 vec->str_pool = NULL;
-                return TD_ERR_PTR(TD_ERR_OOM);
+                return vec;
             }
             vec->str_pool->type = TD_CHAR;
             vec->str_pool->len = 0;
@@ -565,16 +570,16 @@ td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
             size_t need = (size_t)pool_used + len;
             size_t new_cap = pool_cap;
             while (new_cap < need) {
-                if (new_cap > SIZE_MAX / 2) return TD_ERR_PTR(TD_ERR_OOM);
+                if (new_cap > SIZE_MAX / 2) return vec;
                 new_cap *= 2;
             }
             td_t* np = td_scratch_realloc(vec->str_pool, new_cap);
-            if (!np || TD_IS_ERR(np)) return TD_ERR_PTR(TD_ERR_OOM);
+            if (!np || TD_IS_ERR(np)) return vec;
             vec->str_pool = np;
         }
 
         /* Guard against pool offset overflow */
-        if ((uint64_t)pool_used > UINT32_MAX) return TD_ERR_PTR(TD_ERR_OOM);
+        if ((uint64_t)pool_used > UINT32_MAX) return vec;
 
         /* Pool alloc succeeded — now safe to modify the element */
         if (!td_str_is_inline(elem) && elem->len > 0 && vec->str_pool) {
@@ -669,7 +674,8 @@ bool td_vec_is_null(td_t* vec, int64_t idx) {
         return (bits[byte_idx] >> (idx % 8)) & 1;
     }
 
-    /* Inline nullmap */
+    /* Inline nullmap — not available for TD_STR (bytes 0-15 hold str_pool) */
+    if (vec->type == TD_STR) return false;
     if (idx >= 128) return false;
     int byte_idx = (int)(idx / 8);
     int bit_idx = (int)(idx % 8);
