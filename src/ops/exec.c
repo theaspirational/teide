@@ -1630,6 +1630,9 @@ static td_t* exec_elementwise_binary(td_graph_t* g, td_op_t* op, td_t* lhs, td_t
         bool r_atom_str = (r_scalar && (rhs->type == TD_ATOM_STR || (TD_IS_SYM(rhs->type) && td_is_atom(rhs))));
 
         if (l_is_str || r_is_str) {
+            /* TD_STR only supports comparison ops — reject arithmetic */
+            uint16_t opc = op->opcode;
+            if (opc < OP_EQ || opc > OP_GE) { td_release(result); return TD_ERR_PTR(TD_ERR_TYPE); }
             /* At least one side is a TD_STR column — use string comparison path.
                The scalar side (if any) must be TD_ATOM_STR or TD_SYM atom.
                The non-scalar side must be TD_STR. */
@@ -9302,6 +9305,13 @@ static td_t* exec_join(td_graph_t* g, td_op_t* op, td_t* left_table, td_t* right
             r_key_vecs[k] = td_table_get_col(right_table, rk->sym);
         if (rk && rk->base.opcode == OP_CONST && rk->literal)
             r_key_vecs[k] = rk->literal;
+    }
+
+    /* TD_STR keys not yet supported (16-byte elements vs 8-byte hash/eq slots) */
+    for (uint8_t k = 0; k < n_keys; k++) {
+        if ((l_key_vecs[k] && l_key_vecs[k]->type == TD_STR) ||
+            (r_key_vecs[k] && r_key_vecs[k]->type == TD_STR))
+            return TD_ERR_PTR(TD_ERR_NYI);
     }
 
     td_pool_t* pool = td_pool_get();
