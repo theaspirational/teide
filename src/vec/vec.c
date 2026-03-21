@@ -428,8 +428,9 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
     vec = td_cow(vec);
     if (!vec || TD_IS_ERR(vec)) return vec;
 
-    /* Ensure pool has space BEFORE element array realloc, so failures
-     * don't leak the reallocated vector (caller still holds valid vec) */
+    /* Ensure pool has space BEFORE element array realloc.
+     * On pool failure, return vec unchanged (append didn't happen) to avoid
+     * leaking the COW'd vector — caller retains a valid pointer. */
     int64_t pool_off = 0;
     if (len > TD_STR_INLINE_MAX) {
         if (!vec->str_pool) {
@@ -437,7 +438,7 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
             vec->str_pool = td_alloc(init_pool);
             if (!vec->str_pool || TD_IS_ERR(vec->str_pool)) {
                 vec->str_pool = NULL;
-                return TD_ERR_PTR(TD_ERR_OOM);
+                return vec;
             }
             vec->str_pool->type = TD_CHAR;
             vec->str_pool->len = 0;
@@ -449,15 +450,15 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
             size_t need = (size_t)pool_used + len;
             size_t new_cap = pool_cap;
             while (new_cap < need) {
-                if (new_cap > SIZE_MAX / 2) return TD_ERR_PTR(TD_ERR_OOM);
+                if (new_cap > SIZE_MAX / 2) return vec;
                 new_cap *= 2;
             }
             td_t* np = td_scratch_realloc(vec->str_pool, new_cap);
-            if (!np || TD_IS_ERR(np)) return TD_ERR_PTR(TD_ERR_OOM);
+            if (!np || TD_IS_ERR(np)) return vec;
             vec->str_pool = np;
         }
 
-        if ((uint64_t)pool_used > UINT32_MAX) return TD_ERR_PTR(TD_ERR_OOM);
+        if ((uint64_t)pool_used > UINT32_MAX) return vec;
         pool_off = pool_used;
     }
 
@@ -469,13 +470,13 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
         else {
             size_t s2 = 32;
             while (s2 < new_data_size) {
-                if (s2 > SIZE_MAX / 2) return TD_ERR_PTR(TD_ERR_OOM);
+                if (s2 > SIZE_MAX / 2) return vec;
                 s2 *= 2;
             }
             new_data_size = s2;
         }
         td_t* nv = td_scratch_realloc(vec, new_data_size);
-        if (!nv || TD_IS_ERR(nv)) return nv;
+        if (!nv || TD_IS_ERR(nv)) return vec;
         vec = nv;
     }
 
