@@ -10785,8 +10785,13 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
         size_t buf_cap = sizeof(sbuf);
         if (total >= sizeof(sbuf)) {
             buf = (char*)scratch_alloc(&dyn_hdr, total + 1);
-            if (!buf) { buf = sbuf; buf_cap = sizeof(sbuf); }
-            else buf_cap = total + 1;
+            if (!buf) {
+                /* OOM: append empty string rather than silently truncating */
+                if (out_str) { result = td_str_vec_append(result, "", 0); }
+                else { dst[r] = td_sym_intern("", 0); }
+                continue;
+            }
+            buf_cap = total + 1;
         }
         size_t bi = 0;
         for (int a = 0; a < n_args; a++) {
