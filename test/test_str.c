@@ -541,6 +541,36 @@ static MunitResult test_str_vec_compact_all_dead(const void* params, void* fixtu
     return MUNIT_OK;
 }
 
+/* ---- compact with saturated dead counter -------------------------------- */
+
+static MunitResult test_str_vec_compact_saturated_dead(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+
+    /* Append two pooled strings */
+    v = td_str_vec_append(v, "first long pooled str!", 22);
+    v = td_str_vec_append(v, "second long pooled st!", 22);
+
+    /* Overwrite both with inline — all 44 pool bytes become dead */
+    v = td_str_vec_set(v, 0, "a", 1);
+    v = td_str_vec_set(v, 1, "b", 1);
+
+    /* Compact should free pool entirely */
+    v = td_str_vec_compact(v);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+    munit_assert_null(v->str_pool);
+
+    /* Strings still readable */
+    size_t len;
+    const char* p0 = td_str_vec_get(v, 0, &len);
+    munit_assert_size(len, ==, 1);
+    munit_assert_memory_equal(1, p0, "a");
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
 /* ---- str_t_eq inline --------------------------------------------------- */
 
 static MunitResult test_str_t_eq_inline(const void* params, void* fixture) {
@@ -936,6 +966,7 @@ static MunitTest str_tests[] = {
     { "/vec_compact",          test_str_vec_compact,          str_setup, str_teardown, 0, NULL },
     { "/vec_compact_noop",     test_str_vec_compact_noop,     str_setup, str_teardown, 0, NULL },
     { "/vec_compact_all_dead", test_str_vec_compact_all_dead, str_setup, str_teardown, 0, NULL },
+    { "/vec_compact_saturated_dead", test_str_vec_compact_saturated_dead, str_setup, str_teardown, 0, NULL },
     { "/t_eq_inline",          test_str_t_eq_inline,          str_setup, str_teardown, 0, NULL },
     { "/t_eq_pooled",          test_str_t_eq_pooled,          str_setup, str_teardown, 0, NULL },
     { "/t_cmp_order",          test_str_t_cmp_order,          str_setup, str_teardown, 0, NULL },

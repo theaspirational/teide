@@ -730,10 +730,15 @@ td_t* td_str_vec_compact(td_t* vec) {
     if (!vec || TD_IS_ERR(vec)) return vec;
     if (!str_pool_cow(vec)) return TD_ERR_PTR(TD_ERR_OOM);
 
-    int64_t pool_used = vec->str_pool->len;
-    uint32_t dead = str_pool_dead(vec);
-    if ((int64_t)dead > pool_used) dead = (uint32_t)pool_used;
-    size_t live_size = (size_t)(pool_used - dead);
+    /* Compute true live size by scanning elements — avoids overflow when
+     * the dead-byte counter (uint32_t) has saturated at UINT32_MAX. */
+    td_str_t* elems = (td_str_t*)td_data(vec);
+    size_t live_size = 0;
+    for (int64_t i = 0; i < vec->len; i++) {
+        if (td_vec_is_null(vec, i) || td_str_is_inline(&elems[i]) || elems[i].len == 0) continue;
+        live_size += elems[i].len;
+    }
+
     if (live_size == 0) {
         td_release(vec->str_pool);
         vec->str_pool = NULL;
@@ -750,7 +755,6 @@ td_t* td_str_vec_compact(td_t* vec) {
     char* new_base = (char*)td_data(new_pool);
     uint32_t write_off = 0;
 
-    td_str_t* elems = (td_str_t*)td_data(vec);
     for (int64_t i = 0; i < vec->len; i++) {
         if (td_vec_is_null(vec, i) || td_str_is_inline(&elems[i]) || elems[i].len == 0) continue;
 
