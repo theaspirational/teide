@@ -10854,7 +10854,8 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
             if (t == TD_STR) {
                 const td_str_t* elems; const char* p;
                 str_resolve(args[a], &elems, &p);
-                total += elems[r].len;
+                int64_t ar = td_is_atom(args[a]) ? 0 : (r < args[a]->len ? r : 0);
+                total += elems[ar].len;
             } else if (TD_IS_SYM(t)) {
                 const char* sp; size_t sl;
                 sym_elem(args[a], r, &sp, &sl);
@@ -10886,8 +10887,9 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
             if (t == TD_STR) {
                 const td_str_t* elems; const char* pool;
                 str_resolve(args[a], &elems, &pool);
-                const char* sp = td_str_t_ptr(&elems[r], pool);
-                size_t sl = elems[r].len;
+                int64_t ar = td_is_atom(args[a]) ? 0 : (r < args[a]->len ? r : 0);
+                const char* sp = td_str_t_ptr(&elems[ar], pool);
+                size_t sl = elems[ar].len;
                 if (bi + sl < buf_cap) { memcpy(buf + bi, sp, sl); bi += sl; }
             } else if (TD_IS_SYM(t)) {
                 const char* sp; size_t sl;

@@ -214,8 +214,8 @@ In `exec_concat`, if two TD_STR args have different lengths, shorter args are ac
 - Modify: `src/ops/exec.c:10854-10891`
 - Test: `test/test_exec.c`
 
-- [ ] Implement bounds clamping fix
-- [ ] Run tests and verify pass
+- [x] Implement bounds clamping fix
+- [x] Run tests and verify pass
 
 **Step 1: Write a defensive test**
 
