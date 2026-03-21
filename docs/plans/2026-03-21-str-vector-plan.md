@@ -863,7 +863,7 @@ git commit -m "feat: td_str_vec_compact — reclaim dead pool space"
 
 ---
 
-### Task 8: td_str_t comparison and hashing helpers
+### Task 8: td_str_t comparison and hashing helpers [x]
 
 **Files:**
 - Modify: `include/teide/td.h` (inline helpers)

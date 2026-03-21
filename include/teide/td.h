@@ -321,6 +321,36 @@ static inline bool td_str_is_inline(const td_str_t* s) {
     return s->len <= TD_STR_INLINE_MAX;
 }
 
+/* Resolve string data pointer for a td_str_t element.
+ * pool_base: base of string pool (NULL if all strings are inline) */
+static inline const char* td_str_t_ptr(const td_str_t* s, const char* pool_base) {
+    if (s->len == 0) return "";
+    if (td_str_is_inline(s)) return s->data;
+    return pool_base + s->pool_off;
+}
+
+/* Equality: fast reject on len, then prefix, then full compare */
+static inline bool td_str_t_eq(const td_str_t* a, const td_str_t* b, const char* pool_base) {
+    if (a->len != b->len) return false;
+    if (a->len == 0) return true;
+    if (td_str_is_inline(a)) {
+        return memcmp(a->data, b->data, a->len) == 0;
+    }
+    /* Both pooled: check prefix first */
+    if (memcmp(a->prefix, b->prefix, 4) != 0) return false;
+    return memcmp(pool_base + a->pool_off, pool_base + b->pool_off, a->len) == 0;
+}
+
+/* Ordering: lexicographic, shorter string is less on prefix tie */
+static inline int td_str_t_cmp(const td_str_t* a, const td_str_t* b, const char* pool_base) {
+    const char* pa = td_str_t_ptr(a, pool_base);
+    const char* pb = td_str_t_ptr(b, pool_base);
+    uint32_t min_len = a->len < b->len ? a->len : b->len;
+    int r = memcmp(pa, pb, min_len);
+    if (r != 0) return r;
+    return (a->len > b->len) - (a->len < b->len);
+}
+
 /* Determine optimal SYM width for a given dictionary size */
 static inline uint8_t td_sym_dict_width(int64_t dict_size) {
     if (dict_size <= 255)        return TD_SYM_W8;

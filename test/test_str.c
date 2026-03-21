@@ -473,6 +473,60 @@ static MunitResult test_str_vec_compact_all_dead(const void* params, void* fixtu
     return MUNIT_OK;
 }
 
+/* ---- str_t_eq inline --------------------------------------------------- */
+
+static MunitResult test_str_t_eq_inline(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "hello", 5);
+    v = td_str_vec_append(v, "hello", 5);
+    v = td_str_vec_append(v, "world", 5);
+
+    td_str_t* elems = (td_str_t*)td_data(v);
+    munit_assert_true(td_str_t_eq(&elems[0], &elems[1], NULL));
+    munit_assert_false(td_str_t_eq(&elems[0], &elems[2], NULL));
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+/* ---- str_t_eq pooled --------------------------------------------------- */
+
+static MunitResult test_str_t_eq_pooled(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "a]longer string here!", 21);
+    v = td_str_vec_append(v, "a]longer string here!", 21);
+    v = td_str_vec_append(v, "a]longer string nope!", 21);
+
+    td_str_t* elems = (td_str_t*)td_data(v);
+    const char* pool = (const char*)td_data(v->str_pool);
+    munit_assert_true(td_str_t_eq(&elems[0], &elems[1], pool));
+    /* Same prefix "a]lo" but different content */
+    munit_assert_false(td_str_t_eq(&elems[0], &elems[2], pool));
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+/* ---- str_t_cmp order --------------------------------------------------- */
+
+static MunitResult test_str_t_cmp_order(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "apple", 5);
+    v = td_str_vec_append(v, "banana", 6);
+    v = td_str_vec_append(v, "apple", 5);
+
+    td_str_t* elems = (td_str_t*)td_data(v);
+    munit_assert_int(td_str_t_cmp(&elems[0], &elems[1], NULL), <, 0);
+    munit_assert_int(td_str_t_cmp(&elems[1], &elems[0], NULL), >, 0);
+    munit_assert_int(td_str_t_cmp(&elems[0], &elems[2], NULL), ==, 0);
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest str_tests[] = {
@@ -498,6 +552,9 @@ static MunitTest str_tests[] = {
     { "/vec_compact",          test_str_vec_compact,          str_setup, str_teardown, 0, NULL },
     { "/vec_compact_noop",     test_str_vec_compact_noop,     str_setup, str_teardown, 0, NULL },
     { "/vec_compact_all_dead", test_str_vec_compact_all_dead, str_setup, str_teardown, 0, NULL },
+    { "/t_eq_inline",          test_str_t_eq_inline,          str_setup, str_teardown, 0, NULL },
+    { "/t_eq_pooled",          test_str_t_eq_pooled,          str_setup, str_teardown, 0, NULL },
+    { "/t_cmp_order",          test_str_t_cmp_order,          str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 
