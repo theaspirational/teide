@@ -326,6 +326,7 @@ static inline bool td_str_is_inline(const td_str_t* s) {
 static inline const char* td_str_t_ptr(const td_str_t* s, const char* pool_base) {
     if (s->len == 0) return "";
     if (td_str_is_inline(s)) return s->data;
+    if (!pool_base) return "";
     return pool_base + s->pool_off;
 }
 

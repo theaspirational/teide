@@ -272,6 +272,10 @@ td_t* td_vec_concat(td_t* a, td_t* b) {
         }
 
         /* Copy b's elements, rebasing pool offsets */
+        if (a_pool_size > UINT32_MAX) {
+            td_release(result);
+            return TD_ERR_PTR(TD_ERR_RANGE);
+        }
         for (int64_t i = 0; i < b->len; i++) {
             dst[a->len + i] = b_elems[i];
             if (!td_str_is_inline(&b_elems[i]) && b_elems[i].len > 0) {

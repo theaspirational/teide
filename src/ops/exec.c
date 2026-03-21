@@ -10272,6 +10272,7 @@ static td_t* exec_if(td_graph_t* g, td_op_t* op) {
                 }
             }
             result = td_str_vec_append(result, sp, sl);
+            if (TD_IS_ERR(result)) break;
         }
     } else if (out_type == TD_SYM) {
         /* SYM columns may have narrow widths (W8/W16/W32) — use td_read_sym.
@@ -10545,7 +10546,10 @@ static td_t* exec_string_unary(td_graph_t* g, td_op_t* op) {
         if (sl >= sizeof(sbuf)) {
             buf = (char*)scratch_alloc(&dyn_hdr, sl + 1);
             if (!buf) {
-                if (is_str) { result = td_str_vec_append(result, "", 0); }
+                if (is_str) {
+                    result = td_str_vec_append(result, "", 0);
+                    if (TD_IS_ERR(result)) break;
+                }
                 else { sym_dst[i] = td_sym_intern("", 0); }
                 continue;
             }
@@ -10565,6 +10569,7 @@ static td_t* exec_string_unary(td_graph_t* g, td_op_t* op) {
 
         if (is_str) {
             result = td_str_vec_append(result, buf, out_len);
+            if (TD_IS_ERR(result)) { scratch_free(dyn_hdr); break; }
         } else {
             buf[out_len] = '\0';
             sym_dst[i] = td_sym_intern(buf, out_len);
@@ -10676,13 +10681,17 @@ static td_t* exec_substr(td_graph_t* g, td_op_t* op) {
         int64_t ln = l_data ? l_data[i] : l_data_i32 ? (int64_t)l_data_i32[i] : l_scalar;
         if (st < 0) st = 0;
         if ((size_t)st >= sl) {
-            if (is_str) { result = td_str_vec_append(result, "", 0); }
+            if (is_str) {
+                result = td_str_vec_append(result, "", 0);
+                if (TD_IS_ERR(result)) break;
+            }
             else { sym_dst[i] = td_sym_intern("", 0); }
             continue;
         }
         if (ln < 0 || ln > (int64_t)(sl - (size_t)st)) ln = (int64_t)sl - st;
         if (is_str) {
             result = td_str_vec_append(result, sp + st, (size_t)ln);
+            if (TD_IS_ERR(result)) break;
         } else {
             sym_dst[i] = td_sym_intern(sp + st, (size_t)ln);
         }
@@ -10752,7 +10761,10 @@ static td_t* exec_replace(td_graph_t* g, td_op_t* op) {
         if (worst > sizeof(sbuf)) {
             buf = (char*)scratch_alloc(&dyn_hdr, worst);
             if (!buf) {
-                if (is_str) { result = td_str_vec_append(result, "", 0); }
+                if (is_str) {
+                    result = td_str_vec_append(result, "", 0);
+                    if (TD_IS_ERR(result)) break;
+                }
                 else { sym_dst[i] = td_sym_intern("", 0); }
                 continue;
             }
@@ -10770,6 +10782,7 @@ static td_t* exec_replace(td_graph_t* g, td_op_t* op) {
         }
         if (is_str) {
             result = td_str_vec_append(result, buf, bi);
+            if (TD_IS_ERR(result)) { scratch_free(dyn_hdr); break; }
         } else {
             buf[bi] = '\0';
             sym_dst[i] = td_sym_intern(buf, bi);
@@ -10858,7 +10871,10 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
             buf = (char*)scratch_alloc(&dyn_hdr, total + 1);
             if (!buf) {
                 /* OOM: append empty string rather than silently truncating */
-                if (out_str) { result = td_str_vec_append(result, "", 0); }
+                if (out_str) {
+                    result = td_str_vec_append(result, "", 0);
+                    if (TD_IS_ERR(result)) break;
+                }
                 else { dst[r] = td_sym_intern("", 0); }
                 continue;
             }
@@ -10885,6 +10901,7 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
         }
         if (out_str) {
             result = td_str_vec_append(result, buf, bi);
+            if (TD_IS_ERR(result)) { scratch_free(dyn_hdr); break; }
         } else {
             buf[bi] = '\0';
             dst[r] = td_sym_intern(buf, bi);
