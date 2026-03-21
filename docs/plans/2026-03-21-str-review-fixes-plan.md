@@ -395,8 +395,8 @@ Replace the silent `return 0` with a debug assert for the caller contract violat
 **Files:**
 - Modify: `include/teide/td.h:364`
 
-- [ ] Implement assert fix
-- [ ] Run tests and verify pass
+- [x] Implement assert fix
+- [x] Run tests and verify pass
 
 **Step 1: Implement fix**
 

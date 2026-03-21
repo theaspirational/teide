@@ -28,6 +28,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
+#include <assert.h>
 /* MSVC < 17.4 (cl 19.34) does not ship <stdatomic.h>; use Interlocked intrinsics
  * instead. _MSC_VER 1934 corresponds to VS 2022 17.4. */
 #if !defined(_MSC_VER) || _MSC_VER >= 1934
@@ -361,7 +362,9 @@ static inline int td_str_t_cmp(const td_str_t* a, const char* pool_a,
  * pool_base: pool base pointer for pooled strings (NULL when inline-only). */
 static inline uint64_t td_str_t_hash(const td_str_t* s, const char* pool_base) {
     if (s->len == 0) return 0x9E3779B97F4A7C15ULL; /* golden ratio constant for empty */
-    if (!td_str_is_inline(s) && !pool_base) return 0;
+    if (!td_str_is_inline(s)) {
+        assert(pool_base != NULL && "td_str_t_hash: pooled string requires non-NULL pool_base");
+    }
     const char* p = td_str_is_inline(s) ? s->data : pool_base + s->pool_off;
     uint64_t h = 0xcbf29ce484222325ULL;
     for (uint32_t i = 0; i < s->len; i++) {
