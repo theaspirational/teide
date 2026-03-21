@@ -447,8 +447,8 @@ The post-promote SYM override in `td_if` is inconsistent with `promote()` which 
 - Modify: `src/ops/graph.c:459-464`
 - Test: existing tests cover this
 
-- [ ] Implement type resolution fix
-- [ ] Run tests and verify pass
+- [x] Implement type resolution fix
+- [x] Run tests and verify pass
 
 **Step 1: Implement fix**
 
