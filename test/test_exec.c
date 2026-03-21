@@ -2364,6 +2364,100 @@ static MunitResult test_exec_str_trim(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+/* ---- TD_STR SUBSTR ---- */
+static MunitResult test_exec_str_substr(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* start = td_const_i64(g, 1);
+    td_op_t* len_op = td_const_i64(g, 3);
+    td_op_t* sub = td_substr(g, name, start, len_op);
+    td_t* result = td_execute(g, sub);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_STR);
+    munit_assert_int(result->len, ==, 5);
+
+    size_t len;
+    /* "hello" -> "hel" */
+    const char* s0 = td_str_vec_get(result, 0, &len);
+    munit_assert_size(len, ==, 3);
+    munit_assert_memory_equal(3, s0, "hel");
+
+    /* "WORLD" -> "WOR" */
+    const char* s1 = td_str_vec_get(result, 1, &len);
+    munit_assert_size(len, ==, 3);
+    munit_assert_memory_equal(3, s1, "WOR");
+
+    /* "bar_baz" -> "bar" */
+    const char* s3 = td_str_vec_get(result, 3, &len);
+    munit_assert_size(len, ==, 3);
+    munit_assert_memory_equal(3, s3, "bar");
+
+    /* "" -> "" */
+    const char* s4 = td_str_vec_get(result, 4, &len);
+    (void)s4;
+    munit_assert_size(len, ==, 0);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ---- TD_STR REPLACE ---- */
+static MunitResult test_exec_str_replace(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* from = td_const_str(g, "o");
+    td_op_t* to = td_const_str(g, "0");
+    td_op_t* rep = td_replace(g, name, from, to);
+    td_t* result = td_execute(g, rep);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_STR);
+    munit_assert_int(result->len, ==, 5);
+
+    size_t len;
+    /* "hello" -> "hell0" */
+    const char* s0 = td_str_vec_get(result, 0, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, s0, "hell0");
+
+    /* "WORLD" -> "WORLD" (no lowercase o) */
+    const char* s1 = td_str_vec_get(result, 1, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, s1, "WORLD");
+
+    /* "  foo  " -> "  f00  " */
+    const char* s2 = td_str_vec_get(result, 2, &len);
+    munit_assert_size(len, ==, 7);
+    munit_assert_memory_equal(7, s2, "  f00  ");
+
+    /* "" -> "" */
+    const char* s4 = td_str_vec_get(result, 4, &len);
+    (void)s4;
+    munit_assert_size(len, ==, 0);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* ======================================================================
  * Suite
  * ====================================================================== */
@@ -2416,6 +2510,8 @@ static MunitTest exec_tests[] = {
     { "/str_upper",      test_exec_str_upper,         NULL, NULL, 0, NULL },
     { "/str_lower",      test_exec_str_lower,         NULL, NULL, 0, NULL },
     { "/str_trim",       test_exec_str_trim,          NULL, NULL, 0, NULL },
+    { "/str_substr",     test_exec_str_substr,        NULL, NULL, 0, NULL },
+    { "/str_replace",    test_exec_str_replace,       NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 

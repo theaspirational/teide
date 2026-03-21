@@ -10478,10 +10478,20 @@ static td_t* exec_substr(td_graph_t* g, td_op_t* op) {
     if (!len_v || TD_IS_ERR(len_v)) { td_release(input); td_release(start_v); return len_v; }
 
     int64_t nrows = input->len;
-    td_t* result = td_vec_new(TD_SYM, nrows);
+    bool is_str = (input->type == TD_STR);
+
+    td_t* result;
+    if (is_str) {
+        result = td_vec_new(TD_STR, nrows);
+    } else {
+        result = td_vec_new(TD_SYM, nrows);
+    }
     if (!result || TD_IS_ERR(result)) { td_release(input); td_release(start_v); td_release(len_v); return result; }
-    result->len = nrows;
-    int64_t* dst = (int64_t*)td_data(result);
+    if (!is_str) result->len = nrows;
+    int64_t* sym_dst = is_str ? NULL : (int64_t*)td_data(result);
+
+    const td_str_t* str_elems = is_str ? (const td_str_t*)td_data(input) : NULL;
+    const char* str_pool = (is_str && input->str_pool) ? (const char*)td_data(input->str_pool) : NULL;
 
     /* start_v and len_v may be atom scalars or vectors.
      * Handle TD_I32 vectors correctly (read as int32_t, not int64_t). */
@@ -10517,13 +10527,26 @@ static td_t* exec_substr(td_graph_t* g, td_op_t* op) {
 
     for (int64_t i = 0; i < nrows; i++) {
         const char* sp; size_t sl;
-        sym_elem(input, i, &sp, &sl);
+        if (is_str) {
+            sp = td_str_t_ptr(&str_elems[i], str_pool);
+            sl = str_elems[i].len;
+        } else {
+            sym_elem(input, i, &sp, &sl);
+        }
         int64_t st = (s_data ? s_data[i] : s_data_i32 ? (int64_t)s_data_i32[i] : s_scalar) - 1; /* 1-based → 0-based */
         int64_t ln = l_data ? l_data[i] : l_data_i32 ? (int64_t)l_data_i32[i] : l_scalar;
         if (st < 0) st = 0;
-        if ((size_t)st >= sl) { dst[i] = td_sym_intern("", 0); continue; }
+        if ((size_t)st >= sl) {
+            if (is_str) { result = td_str_vec_append(result, "", 0); }
+            else { sym_dst[i] = td_sym_intern("", 0); }
+            continue;
+        }
         if (ln < 0 || ln > (int64_t)(sl - (size_t)st)) ln = (int64_t)sl - st;
-        dst[i] = td_sym_intern(sp + st, (size_t)ln);
+        if (is_str) {
+            result = td_str_vec_append(result, sp + st, (size_t)ln);
+        } else {
+            sym_dst[i] = td_sym_intern(sp + st, (size_t)ln);
+        }
     }
     td_release(input); td_release(start_v); td_release(len_v);
     return result;
@@ -10548,14 +10571,29 @@ static td_t* exec_replace(td_graph_t* g, td_op_t* op) {
     size_t to_len = td_str_len(to_v);
 
     int64_t nrows = input->len;
-    td_t* result = td_vec_new(TD_SYM, nrows);
+    bool is_str = (input->type == TD_STR);
+
+    td_t* result;
+    if (is_str) {
+        result = td_vec_new(TD_STR, nrows);
+    } else {
+        result = td_vec_new(TD_SYM, nrows);
+    }
     if (!result || TD_IS_ERR(result)) { td_release(input); td_release(from_v); td_release(to_v); return result; }
-    result->len = nrows;
-    int64_t* dst = (int64_t*)td_data(result);
+    if (!is_str) result->len = nrows;
+    int64_t* sym_dst = is_str ? NULL : (int64_t*)td_data(result);
+
+    const td_str_t* str_elems = is_str ? (const td_str_t*)td_data(input) : NULL;
+    const char* str_pool = (is_str && input->str_pool) ? (const char*)td_data(input->str_pool) : NULL;
 
     for (int64_t i = 0; i < nrows; i++) {
         const char* sp; size_t sl;
-        sym_elem(input, i, &sp, &sl);
+        if (is_str) {
+            sp = td_str_t_ptr(&str_elems[i], str_pool);
+            sl = str_elems[i].len;
+        } else {
+            sym_elem(input, i, &sp, &sl);
+        }
         /* Simple find-and-replace-all */
         /* Worst case: every char is a match, each replaced by to_len bytes.
          * Guard against size_t overflow when to_len >> from_len. */
@@ -10573,7 +10611,11 @@ static td_t* exec_replace(td_graph_t* g, td_op_t* op) {
         td_t* dyn_hdr = NULL;
         if (worst > sizeof(sbuf)) {
             buf = (char*)scratch_alloc(&dyn_hdr, worst);
-            if (!buf) { dst[i] = td_sym_intern("", 0); continue; }
+            if (!buf) {
+                if (is_str) { result = td_str_vec_append(result, "", 0); }
+                else { sym_dst[i] = td_sym_intern("", 0); }
+                continue;
+            }
         }
         size_t buf_cap = dyn_hdr ? worst : sizeof(sbuf);
         size_t bi = 0;
@@ -10586,8 +10628,12 @@ static td_t* exec_replace(td_graph_t* g, td_op_t* op) {
                 j++;
             }
         }
-        buf[bi] = '\0';
-        dst[i] = td_sym_intern(buf, bi);
+        if (is_str) {
+            result = td_str_vec_append(result, buf, bi);
+        } else {
+            buf[bi] = '\0';
+            sym_dst[i] = td_sym_intern(buf, bi);
+        }
         scratch_free(dyn_hdr);
     }
     td_release(input); td_release(from_v); td_release(to_v);

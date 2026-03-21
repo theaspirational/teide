@@ -511,7 +511,7 @@ td_op_t* td_substr(td_graph_t* g, td_op_t* str, td_op_t* start, td_op_t* len) {
     ext->base.arity = 2;
     ext->base.inputs[0] = str;
     ext->base.inputs[1] = start;
-    ext->base.out_type = TD_SYM;
+    ext->base.out_type = (str->out_type == TD_STR) ? TD_STR : TD_SYM;
     ext->base.est_rows = est;
     ext->literal = (td_t*)(uintptr_t)l_id;
 
@@ -535,7 +535,7 @@ td_op_t* td_replace(td_graph_t* g, td_op_t* str, td_op_t* from, td_op_t* to) {
     ext->base.arity = 2;
     ext->base.inputs[0] = str;
     ext->base.inputs[1] = from;
-    ext->base.out_type = TD_SYM;
+    ext->base.out_type = (str->out_type == TD_STR) ? TD_STR : TD_SYM;
     ext->base.est_rows = est;
     ext->literal = (td_t*)(uintptr_t)t_id;
 

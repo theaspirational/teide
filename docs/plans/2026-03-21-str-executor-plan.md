@@ -763,7 +763,7 @@ git commit -m "feat: UPPER/LOWER/TRIM for TD_STR — produces TD_STR output"
 
 ---
 
-### Task 6: SUBSTR and REPLACE for TD_STR
+### Task 6: SUBSTR and REPLACE for TD_STR [DONE]
 
 **Files:**
 - Modify: `src/ops/exec.c` (exec_substr, exec_replace)
