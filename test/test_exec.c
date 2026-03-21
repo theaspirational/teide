@@ -2199,6 +2199,91 @@ static MunitResult test_exec_str_lt(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+/* ---- TD_STR LE ---- */
+static MunitResult test_exec_str_le(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* lit = td_const_str(g, "hello");
+    td_op_t* cmp = td_le(g, name, lit);
+    td_t* result = td_execute(g, cmp);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_BOOL);
+    munit_assert_int(result->len, ==, 5);
+    uint8_t* d = (uint8_t*)td_data(result);
+    munit_assert_int(d[0], ==, 1);  /* "hello" <= "hello" -> true */
+    munit_assert_int(d[1], ==, 1);  /* "WORLD" <= "hello" -> true (W=0x57 < h=0x68) */
+    munit_assert_int(d[4], ==, 1);  /* "" <= "hello" -> true */
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ---- TD_STR GT ---- */
+static MunitResult test_exec_str_gt(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* lit = td_const_str(g, "hello");
+    td_op_t* cmp = td_gt(g, name, lit);
+    td_t* result = td_execute(g, cmp);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_BOOL);
+    munit_assert_int(result->len, ==, 5);
+    uint8_t* d = (uint8_t*)td_data(result);
+    munit_assert_int(d[0], ==, 0);  /* "hello" > "hello" -> false */
+    munit_assert_int(d[4], ==, 0);  /* "" > "hello" -> false */
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ---- TD_STR GE ---- */
+static MunitResult test_exec_str_ge(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* lit = td_const_str(g, "hello");
+    td_op_t* cmp = td_ge(g, name, lit);
+    td_t* result = td_execute(g, cmp);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_BOOL);
+    munit_assert_int(result->len, ==, 5);
+    uint8_t* d = (uint8_t*)td_data(result);
+    munit_assert_int(d[0], ==, 1);  /* "hello" >= "hello" -> true */
+    munit_assert_int(d[4], ==, 0);  /* "" >= "hello" -> false */
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* ---- TD_STR STRLEN ---- */
 static MunitResult test_exec_str_strlen(const void* params, void* data) {
     (void)params; (void)data;
@@ -2315,6 +2400,18 @@ static MunitResult test_exec_str_lower(const void* params, void* data) {
     const char* s1 = td_str_vec_get(result, 1, &len);
     munit_assert_size(len, ==, 5);
     munit_assert_memory_equal(5, s1, "world");
+
+    const char* s2 = td_str_vec_get(result, 2, &len);
+    munit_assert_size(len, ==, 7);
+    munit_assert_memory_equal(7, s2, "  foo  ");
+
+    const char* s3 = td_str_vec_get(result, 3, &len);
+    munit_assert_size(len, ==, 7);
+    munit_assert_memory_equal(7, s3, "bar_baz");
+
+    const char* s4 = td_str_vec_get(result, 4, &len);
+    (void)s4;
+    munit_assert_size(len, ==, 0);
 
     td_release(result);
     td_graph_free(g);
@@ -2577,7 +2674,22 @@ static MunitResult test_exec_str_if_scalar(const void* params, void* data) {
     td_t* result = td_execute(g, if_op);
 
     munit_assert_false(TD_IS_ERR(result));
+    munit_assert_true(TD_IS_SYM(result->type));  /* scalar str branches → TD_SYM output */
     munit_assert_int(result->len, ==, 5);
+
+    /* row 0: "hello" == "hello" → true → "YES" */
+    int64_t sid0 = td_read_sym(td_data(result), 0, result->type, result->attrs);
+    td_t* sym0 = td_sym_str(sid0);
+    munit_assert_ptr_not_null(sym0);
+    munit_assert_size(td_str_len(sym0), ==, 3);
+    munit_assert_memory_equal(3, td_str_ptr(sym0), "YES");
+
+    /* row 1: "WORLD" != "hello" → false → "NO" */
+    int64_t sid1 = td_read_sym(td_data(result), 1, result->type, result->attrs);
+    td_t* sym1 = td_sym_str(sid1);
+    munit_assert_ptr_not_null(sym1);
+    munit_assert_size(td_str_len(sym1), ==, 2);
+    munit_assert_memory_equal(2, td_str_ptr(sym1), "NO");
 
     td_release(result);
     td_graph_free(g);
@@ -2635,6 +2747,9 @@ static MunitTest exec_tests[] = {
     { "/str_eq",         test_exec_str_eq,            NULL, NULL, 0, NULL },
     { "/str_ne",         test_exec_str_ne,            NULL, NULL, 0, NULL },
     { "/str_lt",         test_exec_str_lt,            NULL, NULL, 0, NULL },
+    { "/str_le",         test_exec_str_le,            NULL, NULL, 0, NULL },
+    { "/str_gt",         test_exec_str_gt,            NULL, NULL, 0, NULL },
+    { "/str_ge",         test_exec_str_ge,            NULL, NULL, 0, NULL },
     { "/str_strlen",     test_exec_str_strlen,        NULL, NULL, 0, NULL },
     { "/str_upper",      test_exec_str_upper,         NULL, NULL, 0, NULL },
     { "/str_lower",      test_exec_str_lower,         NULL, NULL, 0, NULL },

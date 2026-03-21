@@ -360,6 +360,7 @@ static inline int td_str_t_cmp(const td_str_t* a, const char* pool_a,
  * pool_base: pool base pointer for pooled strings (NULL when inline-only). */
 static inline uint64_t td_str_t_hash(const td_str_t* s, const char* pool_base) {
     if (s->len == 0) return 0x9E3779B97F4A7C15ULL; /* golden ratio constant for empty */
+    if (!td_str_is_inline(s) && !pool_base) return 0;
     const char* p = td_str_is_inline(s) ? s->data : pool_base + s->pool_off;
     uint64_t h = 0xcbf29ce484222325ULL;
     for (uint32_t i = 0; i < s->len; i++) {

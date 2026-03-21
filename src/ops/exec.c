@@ -1603,14 +1603,17 @@ static td_t* exec_elementwise_binary(td_graph_t* g, td_op_t* op, td_t* lhs, td_t
     {
         bool l_is_str = (!l_scalar && lhs->type == TD_STR);
         bool r_is_str = (!r_scalar && rhs->type == TD_STR);
-        bool l_atom_str = (l_scalar && (lhs->type == TD_ATOM_STR));
-        bool r_atom_str = (r_scalar && (rhs->type == TD_ATOM_STR));
+        bool l_atom_str = (l_scalar && (lhs->type == TD_ATOM_STR || (TD_IS_SYM(lhs->type) && td_is_atom(lhs))));
+        bool r_atom_str = (r_scalar && (rhs->type == TD_ATOM_STR || (TD_IS_SYM(rhs->type) && td_is_atom(rhs))));
 
         if (l_is_str || r_is_str) {
             /* At least one side is a TD_STR column — use string comparison path.
-               The scalar side (if any) must be TD_ATOM_STR. */
+               The scalar side (if any) must be TD_ATOM_STR or TD_SYM atom.
+               The non-scalar side must be TD_STR. */
             if (l_scalar && !l_atom_str) { td_release(result); return TD_ERR_PTR(TD_ERR_TYPE); }
             if (r_scalar && !r_atom_str) { td_release(result); return TD_ERR_PTR(TD_ERR_TYPE); }
+            if (!l_scalar && !l_is_str) { td_release(result); return TD_ERR_PTR(TD_ERR_TYPE); }
+            if (!r_scalar && !r_is_str) { td_release(result); return TD_ERR_PTR(TD_ERR_TYPE); }
 
             td_pool_t* pool = td_pool_get();
             if (pool && len >= TD_PARALLEL_THRESHOLD) {

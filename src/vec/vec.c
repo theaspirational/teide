@@ -204,7 +204,7 @@ td_t* td_vec_slice(td_t* vec, int64_t offset, int64_t len) {
     if (!s || TD_IS_ERR(s)) return s;
 
     s->type = parent->type;
-    s->attrs = TD_ATTR_SLICE | (parent->attrs & TD_SYM_W_MASK);
+    s->attrs = TD_ATTR_SLICE | (parent->attrs & (TD_SYM_W_MASK | TD_ATTR_HAS_NULLS));
     s->len = len;
     s->slice_parent = parent;
     s->slice_offset = parent_offset;
