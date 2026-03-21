@@ -187,6 +187,7 @@ void* td_vec_get(td_t* vec, int64_t idx) {
 
 td_t* td_vec_slice(td_t* vec, int64_t offset, int64_t len) {
     if (!vec || TD_IS_ERR(vec)) return vec;
+    if (vec->type == TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
     if (offset < 0 || len < 0 || offset > vec->len || len > vec->len - offset)
         return TD_ERR_PTR(TD_ERR_RANGE);
 

@@ -727,7 +727,8 @@ td_t* td_scratch_realloc(td_t* v, size_t new_data_size) {
         new_v->mmod = new_mmod;
         new_v->order = new_order;
         atomic_store_explicit(&new_v->rc, 1, memory_order_relaxed);
-        td_retain_owned_refs(new_v);
+        /* Ownership transfers via memcpy — no retain needed on new_v.
+         * Detach nulls old pointers so td_free won't double-release. */
         td_detach_owned_refs(v);
         td_free(v);
     }
