@@ -166,6 +166,7 @@ td_t* td_vec_set(td_t* vec, int64_t idx, const void* elem) {
 
 void* td_vec_get(td_t* vec, int64_t idx) {
     if (!vec || TD_IS_ERR(vec)) return NULL;
+    if (vec->type == TD_STR) return NULL;
 
     /* Slice path: redirect to parent */
     if (vec->attrs & TD_ATTR_SLICE) {
@@ -396,6 +397,39 @@ void td_vec_set_null(td_t* vec, int64_t idx, bool is_null) {
 }
 
 /* --------------------------------------------------------------------------
+ * str_pool_cow — ensure pool is privately owned after td_cow()
+ *
+ * After td_cow(), the copy shares the same str_pool as the original.
+ * td_retain_owned_refs bumps pool rc, so direct mutation would corrupt
+ * the original's pool data (or td_scratch_realloc would td_free a
+ * shared block).  Deep-copy the pool when rc > 1.
+ * -------------------------------------------------------------------------- */
+
+static td_t* str_pool_cow(td_t* vec) {
+    if (!vec->str_pool || TD_IS_ERR(vec->str_pool)) return vec;
+    uint32_t pool_rc = atomic_load_explicit(&vec->str_pool->rc, memory_order_acquire);
+    if (pool_rc <= 1) return vec;
+
+    size_t pool_data_size = ((size_t)1 << vec->str_pool->order) - 32;
+    td_t* new_pool = td_alloc(pool_data_size);
+    if (!new_pool || TD_IS_ERR(new_pool)) return NULL;
+
+    size_t copy_bytes = (size_t)vec->str_pool->len;
+    if (copy_bytes > pool_data_size) copy_bytes = pool_data_size;
+
+    uint8_t saved_order = new_pool->order;
+    uint8_t saved_mmod  = new_pool->mmod;
+    memcpy(new_pool, vec->str_pool, 32 + copy_bytes);
+    new_pool->order = saved_order;
+    new_pool->mmod  = saved_mmod;
+    atomic_store_explicit(&new_pool->rc, 1, memory_order_relaxed);
+
+    td_release(vec->str_pool);
+    vec->str_pool = new_pool;
+    return vec;
+}
+
+/* --------------------------------------------------------------------------
  * String pool dead-byte tracking
  *
  * Dead bytes are stored as a uint32_t in the pool block's nullmap[0..3],
@@ -428,6 +462,7 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
 
     vec = td_cow(vec);
     if (!vec || TD_IS_ERR(vec)) return vec;
+    if (!str_pool_cow(vec)) return vec;
 
     /* Ensure pool has space BEFORE element array realloc.
      * On pool failure, return vec unchanged (append didn't happen) to avoid
@@ -537,6 +572,7 @@ td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
 
     vec = td_cow(vec);
     if (!vec || TD_IS_ERR(vec)) return vec;
+    if (!str_pool_cow(vec)) return vec;
 
     if (len > UINT32_MAX) return TD_ERR_PTR(TD_ERR_RANGE);
 
@@ -614,6 +650,7 @@ td_t* td_str_vec_compact(td_t* vec) {
 
     vec = td_cow(vec);
     if (!vec || TD_IS_ERR(vec)) return vec;
+    if (!str_pool_cow(vec)) return vec;
 
     int64_t pool_used = vec->str_pool->len;
     uint32_t dead = str_pool_dead(vec);
