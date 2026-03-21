@@ -7549,6 +7549,17 @@ ht_path:;
         if (aop == OP_MAX) ght_need |= GHT_NEED_MAX;
     }
 
+    /* TD_STR keys not yet supported in HT path (16-byte elements vs 8-byte slots) */
+    for (uint8_t k = 0; k < n_keys; k++) {
+        if (key_types[k] == TD_STR) {
+            for (uint8_t kk = 0; kk < n_keys; kk++)
+                if (key_owned[kk] && key_vecs[kk]) td_release(key_vecs[kk]);
+            for (uint8_t a = 0; a < n_aggs; a++)
+                if (agg_owned[a] && agg_vecs[a]) td_release(agg_vecs[a]);
+            return TD_ERR_PTR(TD_ERR_NYI);
+        }
+    }
+
     /* Compute row-layout: keys + agg values inline */
     ght_layout_t ght_layout = ght_compute_layout(n_keys, n_aggs, agg_vecs, ght_need, ext->agg_ops);
 
@@ -10371,7 +10382,15 @@ static td_t* exec_like(td_graph_t* g, td_op_t* op) {
     uint8_t* dst = (uint8_t*)td_data(result);
 
     int8_t in_type = input->type;
-    if (TD_IS_SYM(in_type)) {
+    if (in_type == TD_STR) {
+        const td_str_t* elems; const char* pool;
+        str_resolve(input, &elems, &pool);
+        for (int64_t i = 0; i < len; i++) {
+            const char* sp = td_str_t_ptr(&elems[i], pool);
+            size_t sl = elems[i].len;
+            dst[i] = like_match(sp, sl, pat_str, pat_len) ? 1 : 0;
+        }
+    } else if (TD_IS_SYM(in_type)) {
         const void* base = td_data(input);
         for (int64_t i = 0; i < len; i++) {
             int64_t sym_id = td_read_sym(base, i, in_type, input->attrs);
@@ -10436,7 +10455,15 @@ static td_t* exec_ilike(td_graph_t* g, td_op_t* op) {
     uint8_t* dst = (uint8_t*)td_data(result);
 
     int8_t in_type = input->type;
-    if (TD_IS_SYM(in_type)) {
+    if (in_type == TD_STR) {
+        const td_str_t* elems; const char* pool;
+        str_resolve(input, &elems, &pool);
+        for (int64_t i = 0; i < len; i++) {
+            const char* sp = td_str_t_ptr(&elems[i], pool);
+            size_t sl = elems[i].len;
+            dst[i] = ilike_match(sp, sl, pat_str, pat_len) ? 1 : 0;
+        }
+    } else if (TD_IS_SYM(in_type)) {
         const void* base = td_data(input);
         for (int64_t i = 0; i < len; i++) {
             int64_t sym_id = td_read_sym(base, i, in_type, input->attrs);
