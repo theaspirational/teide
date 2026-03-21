@@ -335,6 +335,63 @@ static MunitResult test_str_vec_get_oob(const void* params, void* fixture) {
     return MUNIT_OK;
 }
 
+/* ---- str_vec_set ------------------------------------------------------- */
+
+static MunitResult test_str_vec_set_inline_to_inline(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "hello", 5);
+
+    v = td_str_vec_set(v, 0, "world", 5);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+
+    size_t len;
+    const char* ptr = td_str_vec_get(v, 0, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, ptr, "world");
+
+    /* No pool needed */
+    munit_assert_null(v->str_pool);
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_vec_set_pooled_to_pooled(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "original long string!", 21);
+
+    v = td_str_vec_set(v, 0, "replacement string!!", 20);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+
+    size_t len;
+    const char* ptr = td_str_vec_get(v, 0, &len);
+    munit_assert_size(len, ==, 20);
+    munit_assert_memory_equal(20, ptr, "replacement string!!");
+
+    /* Old 21 bytes are dead in pool */
+    /* Pool used should be 21 (old dead) + 20 (new) = 41 */
+    munit_assert_int(v->str_pool->len, ==, 41);
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_vec_set_oob(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "hello", 5);
+
+    td_t* r = td_str_vec_set(v, 5, "x", 1);
+    munit_assert_true(TD_IS_ERR(r));
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest str_tests[] = {
@@ -354,6 +411,9 @@ static MunitTest str_tests[] = {
     { "/vec_get_inline",       test_str_vec_get_inline,       str_setup, str_teardown, 0, NULL },
     { "/vec_get_pooled",       test_str_vec_get_pooled,       str_setup, str_teardown, 0, NULL },
     { "/vec_get_oob",          test_str_vec_get_oob,          str_setup, str_teardown, 0, NULL },
+    { "/vec_set_i2i",          test_str_vec_set_inline_to_inline, str_setup, str_teardown, 0, NULL },
+    { "/vec_set_p2p",          test_str_vec_set_pooled_to_pooled, str_setup, str_teardown, 0, NULL },
+    { "/vec_set_oob",          test_str_vec_set_oob,          str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

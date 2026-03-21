@@ -551,7 +551,7 @@ git commit -m "feat: td_str_vec_get — read inline or pooled strings by index"
 
 ---
 
-### Task 6: td_str_vec_set — update string in-place with dead tracking
+### Task 6: td_str_vec_set — update string in-place with dead tracking [x]
 
 **Files:**
 - Modify: `src/vec/vec.c`

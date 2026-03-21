@@ -484,6 +484,68 @@ const char* td_str_vec_get(td_t* vec, int64_t idx, size_t* out_len) {
 }
 
 /* --------------------------------------------------------------------------
+ * td_str_vec_set — update string at index in a TD_STR vector
+ *
+ * Overwrites element at idx. Old pooled bytes become dead space (reclaimed
+ * by td_str_vec_compact). New pooled strings are appended to the pool.
+ * -------------------------------------------------------------------------- */
+
+td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
+    if (!vec || TD_IS_ERR(vec)) return vec;
+    if (vec->type != TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
+    if (idx < 0 || idx >= vec->len) return TD_ERR_PTR(TD_ERR_RANGE);
+
+    vec = td_cow(vec);
+    if (!vec || TD_IS_ERR(vec)) return vec;
+
+    td_str_t* elem = &((td_str_t*)td_data(vec))[idx];
+
+    /* Dead bytes tracking deferred to Task 7 (compact) */
+
+    memset(elem, 0, sizeof(td_str_t));
+    elem->len = (uint32_t)len;
+
+    if (len <= TD_STR_INLINE_MAX) {
+        if (len > 0) memcpy(elem->data, s, len);
+    } else {
+        /* Pool path: allocate pool if needed, append string bytes */
+        if (!vec->str_pool) {
+            size_t init_pool = len < 256 ? 256 : len * 2;
+            vec->str_pool = td_alloc(init_pool);
+            if (!vec->str_pool || TD_IS_ERR(vec->str_pool)) {
+                vec->str_pool = NULL;
+                return TD_ERR_PTR(TD_ERR_OOM);
+            }
+            vec->str_pool->type = TD_CHAR;
+            vec->str_pool->len = 0;
+        }
+
+        /* Grow pool if needed */
+        int64_t pool_used = vec->str_pool->len;
+        size_t pool_cap = ((size_t)1 << vec->str_pool->order) - 32;
+        if ((size_t)pool_used + len > pool_cap) {
+            size_t need = (size_t)pool_used + len;
+            size_t new_cap = pool_cap;
+            while (new_cap < need) {
+                if (new_cap > SIZE_MAX / 2) return TD_ERR_PTR(TD_ERR_OOM);
+                new_cap *= 2;
+            }
+            td_t* np = td_scratch_realloc(vec->str_pool, new_cap);
+            if (!np || TD_IS_ERR(np)) return TD_ERR_PTR(TD_ERR_OOM);
+            vec->str_pool = np;
+        }
+
+        char* pool_base = (char*)td_data(vec->str_pool);
+        memcpy(pool_base + pool_used, s, len);
+        memcpy(elem->prefix, s, 4);
+        elem->pool_off = (uint32_t)pool_used;
+        vec->str_pool->len = pool_used + (int64_t)len;
+    }
+
+    return vec;
+}
+
+/* --------------------------------------------------------------------------
  * td_embedding_new — create a flat F32 vector for N*D embedding storage
  * -------------------------------------------------------------------------- */
 
