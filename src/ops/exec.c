@@ -10193,8 +10193,8 @@ static td_t* exec_if(td_graph_t* g, td_op_t* op) {
     }
 
     int64_t len = cond_v->len;
-    bool then_scalar = td_is_atom(then_v);
-    bool else_scalar = td_is_atom(else_v);
+    bool then_scalar = td_is_atom(then_v) || (then_v->type > 0 && then_v->len == 1);
+    bool else_scalar = td_is_atom(else_v) || (else_v->type > 0 && else_v->len == 1);
     if (then_scalar && !else_scalar) len = else_v->len;
     if (!then_scalar) len = then_v->len;
 
@@ -10247,6 +10247,9 @@ static td_t* exec_if(td_graph_t* g, td_op_t* op) {
                     if (then_v->type == TD_ATOM_STR) {
                         sp = td_str_ptr(then_v);
                         sl = td_str_len(then_v);
+                    } else if (then_v->type == TD_STR) {
+                        sp = td_str_vec_get(then_v, 0, &sl);
+                        if (!sp) { sp = ""; sl = 0; }
                     } else if (TD_IS_SYM(then_v->type)) {
                         td_t* s = td_sym_str(then_v->i64);
                         sp = s ? td_str_ptr(s) : "";
@@ -10267,6 +10270,9 @@ static td_t* exec_if(td_graph_t* g, td_op_t* op) {
                     if (else_v->type == TD_ATOM_STR) {
                         sp = td_str_ptr(else_v);
                         sl = td_str_len(else_v);
+                    } else if (else_v->type == TD_STR) {
+                        sp = td_str_vec_get(else_v, 0, &sl);
+                        if (!sp) { sp = ""; sl = 0; }
                     } else if (TD_IS_SYM(else_v->type)) {
                         td_t* s = td_sym_str(else_v->i64);
                         sp = s ? td_str_ptr(s) : "";
@@ -10757,12 +10763,14 @@ static td_t* exec_replace(td_graph_t* g, td_op_t* op) {
          * Guard against size_t overflow when to_len >> from_len. */
         size_t n_matches = (from_len > 0) ? sl / from_len : 0;
         size_t worst;
-        if (from_len > 0 && to_len > 0 && n_matches > SIZE_MAX / to_len) {
+        if (from_len > 0 && to_len > from_len && n_matches > SIZE_MAX / to_len) {
             worst = SIZE_MAX; /* overflow → cap at max; scratch_alloc will OOM */
+        } else if (from_len > 0 && to_len >= from_len) {
+            /* Expanding or same-size: max output when every chunk matches */
+            worst = n_matches * to_len + (sl % from_len) + 1;
         } else {
-            worst = (from_len > 0)
-                ? n_matches * to_len + (sl % from_len) + 1
-                : sl + 1;
+            /* Shrinking or from_len==0: max output when nothing matches → sl */
+            worst = sl + 1;
         }
         char sbuf[8192];
         char* buf = sbuf;
