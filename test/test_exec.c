@@ -2458,6 +2458,63 @@ static MunitResult test_exec_str_replace(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+static MunitResult test_exec_str_concat(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    /* Table with two TD_STR columns */
+    td_t* c0 = td_vec_new(TD_STR, 3);
+    c0 = td_str_vec_append(c0, "John", 4);
+    c0 = td_str_vec_append(c0, "Jane", 4);
+    c0 = td_str_vec_append(c0, "Bob", 3);
+
+    td_t* c1 = td_vec_new(TD_STR, 3);
+    c1 = td_str_vec_append(c1, " Doe", 4);
+    c1 = td_str_vec_append(c1, " Smith", 6);
+    c1 = td_str_vec_append(c1, " Jr", 3);
+
+    int64_t n_first = td_sym_intern("first", 5);
+    int64_t n_last  = td_sym_intern("last", 4);
+
+    td_t* tbl = td_table_new(2);
+    tbl = td_table_add_col(tbl, n_first, c0);
+    tbl = td_table_add_col(tbl, n_last, c1);
+    td_release(c0);
+    td_release(c1);
+
+    td_graph_t* g = td_graph_new(tbl);
+    td_op_t* first = td_scan(g, "first");
+    td_op_t* last  = td_scan(g, "last");
+    td_op_t* args[] = {first, last};
+    td_op_t* cat = td_concat(g, args, 2);
+    td_t* result = td_execute(g, cat);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_STR);
+    munit_assert_int(result->len, ==, 3);
+
+    size_t len;
+    const char* s0 = td_str_vec_get(result, 0, &len);
+    munit_assert_size(len, ==, 8);
+    munit_assert_memory_equal(8, s0, "John Doe");
+
+    const char* s1 = td_str_vec_get(result, 1, &len);
+    munit_assert_size(len, ==, 10);
+    munit_assert_memory_equal(10, s1, "Jane Smith");
+
+    const char* s2 = td_str_vec_get(result, 2, &len);
+    munit_assert_size(len, ==, 6);
+    munit_assert_memory_equal(6, s2, "Bob Jr");
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* ======================================================================
  * Suite
  * ====================================================================== */
@@ -2512,6 +2569,7 @@ static MunitTest exec_tests[] = {
     { "/str_trim",       test_exec_str_trim,          NULL, NULL, 0, NULL },
     { "/str_substr",     test_exec_str_substr,        NULL, NULL, 0, NULL },
     { "/str_replace",    test_exec_str_replace,       NULL, NULL, 0, NULL },
+    { "/str_concat",     test_exec_str_concat,        NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 

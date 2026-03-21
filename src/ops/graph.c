@@ -564,7 +564,12 @@ td_op_t* td_concat(td_graph_t* g, td_op_t** args, int n) {
     ext->base.arity = 2;
     ext->base.inputs[0] = &g->nodes[ids[0]];
     ext->base.inputs[1] = &g->nodes[ids[1]];
-    ext->base.out_type = TD_SYM;
+    /* TD_STR if any input is TD_STR, else TD_SYM */
+    int8_t out_type = TD_SYM;
+    for (int i = 0; i < n; i++) {
+        if (args[i]->out_type == TD_STR) { out_type = TD_STR; break; }
+    }
+    ext->base.out_type = out_type;
     ext->base.est_rows = est;
     ext->sym = n; /* total arg count stored in sym field */
 

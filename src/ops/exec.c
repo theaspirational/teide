@@ -10677,32 +10677,36 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
 
     /* Derive nrows from first vector arg (scalar args have byte-length in len) */
     int64_t nrows = 1;
+    bool out_str = false;
     for (int a = 0; a < n_args; a++) {
         int8_t at = args[a]->type;
-        if (TD_IS_SYM(at)) { nrows = args[a]->len; break; }
-        if (!td_is_atom(args[a])) { nrows = args[a]->len; break; }
+        if (at == TD_STR) { out_str = true; if (nrows == 1) nrows = args[a]->len; }
+        if (TD_IS_SYM(at)) { if (nrows == 1) nrows = args[a]->len; }
+        if (!td_is_atom(args[a]) && nrows == 1) { nrows = args[a]->len; }
     }
-    td_t* result = td_vec_new(TD_SYM, nrows);
+    td_t* result = td_vec_new(out_str ? TD_STR : TD_SYM, nrows);
     if (!result || TD_IS_ERR(result)) {
         for (int i = 0; i < n_args; i++) td_release(args[i]);
         scratch_free(args_hdr);
         return result;
     }
-    result->len = nrows;
-    int64_t* dst = (int64_t*)td_data(result);
+    if (!out_str) result->len = nrows;
+    int64_t* dst = out_str ? NULL : (int64_t*)td_data(result);
 
     for (int64_t r = 0; r < nrows; r++) {
         /* Pre-scan to compute total concat length for this row */
         size_t total = 0;
         for (int a = 0; a < n_args; a++) {
             int8_t t = args[a]->type;
-            if (TD_IS_SYM(t)) {
+            if (t == TD_STR) {
+                const td_str_t* elems = (const td_str_t*)td_data(args[a]);
+                total += elems[r].len;
+            } else if (TD_IS_SYM(t)) {
                 const char* sp; size_t sl;
                 sym_elem(args[a], r, &sp, &sl);
                 total += sl;
             } else if (t == TD_ATOM_STR) {
-                size_t sl = td_str_len(args[a]);
-                total += sl;
+                total += td_str_len(args[a]);
             }
         }
         char sbuf[8192];
@@ -10717,7 +10721,13 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
         size_t bi = 0;
         for (int a = 0; a < n_args; a++) {
             int8_t t = args[a]->type;
-            if (TD_IS_SYM(t)) {
+            if (t == TD_STR) {
+                const td_str_t* elems = (const td_str_t*)td_data(args[a]);
+                const char* pool = args[a]->str_pool ? (const char*)td_data(args[a]->str_pool) : NULL;
+                const char* sp = td_str_t_ptr(&elems[r], pool);
+                size_t sl = elems[r].len;
+                if (bi + sl < buf_cap) { memcpy(buf + bi, sp, sl); bi += sl; }
+            } else if (TD_IS_SYM(t)) {
                 const char* sp; size_t sl;
                 sym_elem(args[a], r, &sp, &sl);
                 if (bi + sl < buf_cap) { memcpy(buf + bi, sp, sl); bi += sl; }
@@ -10727,8 +10737,12 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
                 if (sp && bi + sl < buf_cap) { memcpy(buf + bi, sp, sl); bi += sl; }
             }
         }
-        buf[bi] = '\0';
-        dst[r] = td_sym_intern(buf, bi);
+        if (out_str) {
+            result = td_str_vec_append(result, buf, bi);
+        } else {
+            buf[bi] = '\0';
+            dst[r] = td_sym_intern(buf, bi);
+        }
         scratch_free(dyn_hdr);
     }
     for (int i = 0; i < n_args; i++) td_release(args[i]);

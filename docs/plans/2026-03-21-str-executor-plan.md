@@ -832,7 +832,7 @@ git commit -m "feat: SUBSTR/REPLACE for TD_STR — substring and replacement wit
 
 ---
 
-### Task 7: CONCAT for TD_STR
+### Task 7: CONCAT for TD_STR [DONE]
 
 **Files:**
 - Modify: `src/ops/exec.c:10486-10540` (exec_concat)
