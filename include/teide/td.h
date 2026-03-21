@@ -123,6 +123,9 @@ extern "C" {
 /* Unified dictionary-encoded string column (adaptive width) */
 #define TD_SYM       20
 
+/* Variable-length string column (inline + pool) */
+#define TD_STR       21
+
 /* Symbol width encoding (lower 2 bits of attrs when type == TD_SYM) */
 #define TD_SYM_W_MASK   0x03
 #define TD_SYM_W8       0x00   /* uint8_t  indices — dict ≤ 255 entries */
@@ -154,7 +157,8 @@ extern "C" {
 #define TD_ATOM_I32        (-TD_I32)
 #define TD_ATOM_I64        (-TD_I64)
 #define TD_ATOM_F64        (-TD_F64)
-#define TD_ATOM_STR        (-8)
+#define TD_ATOM_F32        (-TD_F32)
+#define TD_ATOM_STR        (-TD_STR)
 #define TD_ATOM_DATE       (-TD_DATE)
 #define TD_ATOM_TIME       (-TD_TIME)
 #define TD_ATOM_TIMESTAMP  (-TD_TIMESTAMP)
@@ -162,7 +166,7 @@ extern "C" {
 #define TD_ATOM_SYM        (-TD_SYM)
 
 /* Number of types (positive range): must be > max type ID */
-#define TD_TYPE_COUNT 21
+#define TD_TYPE_COUNT 22
 
 /* ===== Attribute Flags ===== */
 
@@ -229,6 +233,7 @@ typedef union TD_ALIGN(32) td_t {
             uint8_t  nullmap[16];
             struct { union td_t* slice_parent; int64_t slice_offset; };
             struct { union td_t* ext_nullmap;  union td_t* sym_dict; };
+            struct { union td_t* str_ext_null; union td_t* str_pool; };
         };
         /* Bytes 16-31: metadata + value */
         uint8_t  mmod;       /* 0=heap, 1=file-mmap */
@@ -300,6 +305,20 @@ static inline void td_write_sym(void* data, int64_t row, uint64_t val, int8_t ty
         case TD_SYM_W32: ((uint32_t*)data)[row] = (uint32_t)val; break;
         case TD_SYM_W64: ((int64_t*)data)[row]  = (int64_t)val;  break;
     }
+}
+
+/* ===== Inline String Element (16 bytes) ===== */
+
+typedef union {
+    struct { uint32_t len; char     data[12]; };      /* inline: len <= 12 */
+    struct { uint32_t len_; char    prefix[4];        /* pooled: len > 12  */
+             uint32_t pool_off; uint32_t _pad; };
+} td_str_t;
+
+#define TD_STR_INLINE_MAX 12
+
+static inline bool td_str_is_inline(const td_str_t* s) {
+    return s->len <= TD_STR_INLINE_MAX;
 }
 
 /* Determine optimal SYM width for a given dictionary size */
