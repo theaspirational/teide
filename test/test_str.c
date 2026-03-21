@@ -233,6 +233,63 @@ static MunitResult test_str_vec_append_empty(const void* params, void* fixture) 
     return MUNIT_OK;
 }
 
+/* ---- str_vec_append pooled ---------------------------------------------- */
+
+static MunitResult test_str_vec_append_pooled(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+
+    /* 13 bytes — must go to pool */
+    const char* long_str = "hello world!!";
+    v = td_str_vec_append(v, long_str, 13);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+    munit_assert_int(td_len(v), ==, 1);
+
+    /* Pool should be allocated */
+    munit_assert_ptr_not_null(v->str_pool);
+
+    /* Element should have prefix and pool offset */
+    td_str_t* elems = (td_str_t*)td_data(v);
+    munit_assert_uint(elems[0].len, ==, 13);
+    munit_assert_memory_equal(4, elems[0].prefix, "hell");
+    munit_assert_uint(elems[0].pool_off, ==, 0);
+
+    /* Verify pool contains the string */
+    const char* pool_data = (const char*)td_data(v->str_pool);
+    munit_assert_memory_equal(13, pool_data + 0, long_str);
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_vec_append_mixed(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+
+    /* Mix inline and pooled */
+    v = td_str_vec_append(v, "short", 5);
+    v = td_str_vec_append(v, "this is a long string!", 22);
+    v = td_str_vec_append(v, "tiny", 4);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+    munit_assert_int(td_len(v), ==, 3);
+
+    td_str_t* elems = (td_str_t*)td_data(v);
+    /* First: inline */
+    munit_assert_uint(elems[0].len, ==, 5);
+    munit_assert_memory_equal(5, elems[0].data, "short");
+    /* Second: pooled */
+    munit_assert_uint(elems[1].len, ==, 22);
+    munit_assert_memory_equal(4, elems[1].prefix, "this");
+    /* Third: inline */
+    munit_assert_uint(elems[2].len, ==, 4);
+    munit_assert_memory_equal(4, elems[2].data, "tiny");
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest str_tests[] = {
@@ -247,6 +304,8 @@ static MunitTest str_tests[] = {
     { "/vec_append_inline",    test_str_vec_append_inline,    str_setup, str_teardown, 0, NULL },
     { "/vec_append_inline_12", test_str_vec_append_inline_12, str_setup, str_teardown, 0, NULL },
     { "/vec_append_empty",     test_str_vec_append_empty,     str_setup, str_teardown, 0, NULL },
+    { "/vec_append_pooled",    test_str_vec_append_pooled,    str_setup, str_teardown, 0, NULL },
+    { "/vec_append_mixed",     test_str_vec_append_mixed,     str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

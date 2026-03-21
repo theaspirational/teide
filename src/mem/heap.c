@@ -316,6 +316,9 @@ static void td_release_owned_refs(td_t* v) {
         v->ext_nullmap && !TD_IS_ERR(v->ext_nullmap))
         td_release(v->ext_nullmap);
 
+    if (v->type == TD_STR && v->str_pool && !TD_IS_ERR(v->str_pool))
+        td_release(v->str_pool);
+
     if (TD_IS_PARTED(v->type)) {
         int64_t n_segs = v->len;
         td_t** segs = (td_t**)td_data(v);

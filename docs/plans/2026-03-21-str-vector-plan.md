@@ -308,7 +308,7 @@ git commit -m "feat: td_str_vec_append — inline path for strings <= 12 bytes"
 
 ---
 
-### Task 4: td_str_vec_append — pooled strings (>12 bytes)
+### Task 4: td_str_vec_append — pooled strings (>12 bytes) [x]
 
 **Files:**
 - Modify: `src/vec/vec.c`

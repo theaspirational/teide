@@ -386,7 +386,7 @@ void td_vec_set_null(td_t* vec, int64_t idx, bool is_null) {
  * td_str_vec_append — append a string to a TD_STR vector
  *
  * Strings <= 12 bytes are inlined in the td_str_t element.
- * Strings > 12 bytes go to the pool (implemented in a later task).
+ * Strings > 12 bytes store a 4-byte prefix + offset into a growable pool.
  * -------------------------------------------------------------------------- */
 
 td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
@@ -420,8 +420,41 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
     if (len <= TD_STR_INLINE_MAX) {
         if (len > 0) memcpy(elem->data, s, len);
     } else {
-        /* Pool path — implemented in Task 4 */
-        return TD_ERR_PTR(TD_ERR_TYPE);
+        /* Pool path: allocate pool if needed, append string bytes */
+        if (!vec->str_pool) {
+            size_t init_pool = len < 256 ? 256 : len * 2;
+            vec->str_pool = td_alloc(init_pool);
+            if (!vec->str_pool || TD_IS_ERR(vec->str_pool)) {
+                vec->str_pool = NULL;
+                return TD_ERR_PTR(TD_ERR_OOM);
+            }
+            vec->str_pool->type = TD_CHAR;
+            vec->str_pool->len = 0;
+        }
+
+        /* Grow pool if needed */
+        int64_t pool_used = vec->str_pool->len;
+        size_t pool_cap = ((size_t)1 << vec->str_pool->order) - 32;
+        if ((size_t)pool_used + len > pool_cap) {
+            size_t need = (size_t)pool_used + len;
+            size_t new_cap = pool_cap;
+            while (new_cap < need) {
+                if (new_cap > SIZE_MAX / 2) return TD_ERR_PTR(TD_ERR_OOM);
+                new_cap *= 2;
+            }
+            td_t* np = td_scratch_realloc(vec->str_pool, new_cap);
+            if (!np || TD_IS_ERR(np)) return TD_ERR_PTR(TD_ERR_OOM);
+            vec->str_pool = np;
+        }
+
+        /* Copy string into pool */
+        char* pool_base = (char*)td_data(vec->str_pool);
+        memcpy(pool_base + pool_used, s, len);
+
+        /* Fill element: prefix + offset */
+        memcpy(elem->prefix, s, 4);
+        elem->pool_off = (uint32_t)pool_used;
+        vec->str_pool->len = pool_used + (int64_t)len;
     }
 
     vec->len++;
