@@ -976,7 +976,7 @@ git commit -m "feat: td_str_t comparison helpers — eq with prefix rejection, l
 
 ---
 
-### Task 9: Null support for TD_STR vectors
+### Task 9: Null support for TD_STR vectors [x]
 
 **Files:**
 - Modify: `src/vec/vec.c` (ensure null bitmap ops work with TD_STR)

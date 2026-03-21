@@ -527,6 +527,32 @@ static MunitResult test_str_t_cmp_order(const void* params, void* fixture) {
     return MUNIT_OK;
 }
 
+/* ---- str_vec_null ------------------------------------------------------ */
+
+static MunitResult test_str_vec_null(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "hello", 5);
+    v = td_str_vec_append(v, "", 0);  /* empty, not null */
+    v = td_str_vec_append(v, "world", 5);
+    munit_assert_int(td_len(v), ==, 3);
+
+    /* Mark row 1 as null */
+    td_vec_set_null(v, 1, true);
+    munit_assert_true(td_vec_is_null(v, 1));
+    munit_assert_false(td_vec_is_null(v, 0));
+    munit_assert_false(td_vec_is_null(v, 2));
+
+    /* Non-null rows still readable */
+    size_t len;
+    const char* ptr = td_str_vec_get(v, 0, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, ptr, "hello");
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest str_tests[] = {
@@ -555,6 +581,7 @@ static MunitTest str_tests[] = {
     { "/t_eq_inline",          test_str_t_eq_inline,          str_setup, str_teardown, 0, NULL },
     { "/t_eq_pooled",          test_str_t_eq_pooled,          str_setup, str_teardown, 0, NULL },
     { "/t_cmp_order",          test_str_t_cmp_order,          str_setup, str_teardown, 0, NULL },
+    { "/vec_null",             test_str_vec_null,             str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 
