@@ -24,6 +24,7 @@
 #include "sym.h"
 #include "store/fileio.h"
 #include "mem/sys.h"
+#include "mem/arena.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdatomic.h>
@@ -50,6 +51,9 @@ typedef struct {
 
     /* Persistence: entries [0..persisted_count-1] are known on disk */
     uint32_t   persisted_count;
+
+    /* Arena for string atoms — avoids per-string buddy allocator calls */
+    td_arena_t*  arena;
 } sym_table_t;
 
 static sym_table_t g_sym;
@@ -66,6 +70,41 @@ static inline void sym_lock(void) {
 }
 static inline void sym_unlock(void) {
     atomic_store_explicit(&g_sym_lock, 0, memory_order_release);
+}
+
+/* Arena-backed td_str equivalent. Same logic as td_str() in atom.c
+ * but allocates from the sym arena instead of the buddy allocator. */
+static td_t* sym_str_arena(td_arena_t* arena, const char* s, size_t len) {
+    if (len < 7) {
+        /* SSO path: inline in header */
+        td_t* v = td_arena_alloc(arena, 0);
+        if (!v) return NULL;
+        v->type = TD_ATOM_STR;
+        v->slen = (uint8_t)len;
+        if (len > 0) memcpy(v->sdata, s, len);
+        v->sdata[len] = '\0';
+        return v;
+    }
+    /* Long string: fused single allocation for CHAR vector + STR header.
+     * Layout: [CHAR td_t header (32B) | string data (len+1) | padding | STR td_t header (32B)]
+     * This halves arena_alloc calls for long strings. */
+    size_t data_size = len + 1;
+    size_t chars_block = ((32 + data_size) + 31) & ~(size_t)31;  /* align up to 32 */
+    td_t* chars = td_arena_alloc(arena, chars_block + 32 - 32);  /* chars_block - 32 (header) + 32 (str header) */
+    if (!chars) return NULL;
+    chars->type = TD_CHAR;
+    chars->len = (int64_t)len;
+    memcpy(td_data(chars), s, len);
+    ((char*)td_data(chars))[len] = '\0';
+
+    /* STR header sits right after the CHAR block */
+    td_t* v = (td_t*)((char*)chars + chars_block);
+    memset(v, 0, 32);
+    v->attrs = TD_ATTR_ARENA;
+    atomic_store_explicit(&v->rc, 1, memory_order_relaxed);
+    v->type = TD_ATOM_STR;
+    v->obj = chars;
+    return v;
 }
 
 /* --------------------------------------------------------------------------
@@ -95,6 +134,16 @@ void td_sym_init(void) {
         atomic_store_explicit(&g_sym_inited, false, memory_order_release);
         return;
     }
+
+    g_sym.arena = td_arena_new(1024 * 1024);  /* 1MB chunks */
+    if (!g_sym.arena) {
+        td_sys_free(g_sym.strings);
+        td_sys_free(g_sym.buckets);
+        g_sym.strings = NULL;
+        g_sym.buckets = NULL;
+        atomic_store_explicit(&g_sym_inited, false, memory_order_release);
+        return;
+    }
     /* g_sym_inited already set to true by CAS above */
 }
 
@@ -105,11 +154,11 @@ void td_sym_init(void) {
 void td_sym_destroy(void) {
     if (!atomic_load_explicit(&g_sym_inited, memory_order_acquire)) return;
 
-    /* Release all interned string atoms */
-    for (uint32_t i = 0; i < g_sym.str_count; i++) {
-        if (g_sym.strings[i]) {
-            td_release(g_sym.strings[i]);
-        }
+    /* Arena-backed strings: td_release is a no-op (TD_ATTR_ARENA).
+     * Destroy the arena to free all string atoms at once. */
+    if (g_sym.arena) {
+        td_arena_destroy(g_sym.arena);
+        g_sym.arena = NULL;
     }
 
     td_sys_free(g_sym.strings);
@@ -223,10 +272,10 @@ int64_t td_sym_intern(const char* str, size_t len) {
         g_sym.str_cap = new_str_cap;
     }
 
-    /* Create string atom — td_str() returns with rc=1 which is the
-     * sym table's owning reference. No additional retain needed. */
-    td_t* s = td_str(str, len);
-    if (!s || TD_IS_ERR(s)) { sym_unlock(); return -1; }
+    /* Create string atom from arena — avoids buddy allocator overhead.
+     * Arena blocks have rc=1 and TD_ATTR_ARENA set. */
+    td_t* s = sym_str_arena(g_sym.arena, str, len);
+    if (!s) { sym_unlock(); return -1; }
     g_sym.strings[new_id] = s;
     g_sym.str_count++;
 
@@ -288,8 +337,8 @@ int64_t td_sym_intern_prehashed(uint32_t hash, const char* str, size_t len) {
         g_sym.str_cap = new_str_cap;
     }
 
-    td_t* s = td_str(str, len);
-    if (!s || TD_IS_ERR(s)) return -1;
+    td_t* s = sym_str_arena(g_sym.arena, str, len);
+    if (!s) return -1;
     g_sym.strings[new_id] = s;
     g_sym.str_count++;
 
@@ -401,7 +450,9 @@ bool td_sym_ensure_cap(uint32_t needed) {
     }
 
     /* Grow hash table so load factor stays below threshold after filling */
-    uint32_t needed_buckets = (uint32_t)((double)needed / SYM_LOAD_FACTOR) + 1;
+    double raw_buckets = (double)needed / SYM_LOAD_FACTOR + 1.0;
+    if (raw_buckets > (double)UINT32_MAX) { sym_unlock(); return false; }
+    uint32_t needed_buckets = (uint32_t)raw_buckets;
     /* Round up to power of 2 */
     needed_buckets--;
     needed_buckets |= needed_buckets >> 1;
