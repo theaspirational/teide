@@ -882,6 +882,33 @@ static MunitResult test_str_vec_concat_nulls(const void* params, void* fixture) 
     return MUNIT_OK;
 }
 
+/* ---- str_vec_slice_null ------------------------------------------------ */
+
+static MunitResult test_str_vec_slice_null(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "hello", 5);
+    v = td_str_vec_append(v, "world", 5);
+    v = td_str_vec_append(v, "foo", 3);
+    v = td_str_vec_append(v, "bar", 3);
+    td_vec_set_null(v, 1, true);
+    td_vec_set_null(v, 3, true);
+
+    /* Slice [1..3) — includes null at parent index 1 */
+    td_t* s = td_vec_slice(v, 1, 2);
+    munit_assert_ptr_not_null(s);
+    munit_assert_false(TD_IS_ERR(s));
+
+    /* Slice index 0 = parent index 1 = null */
+    munit_assert_true(td_vec_is_null(s, 0));
+    /* Slice index 1 = parent index 2 = not null */
+    munit_assert_false(td_vec_is_null(s, 1));
+
+    td_release(s);
+    td_release(v);
+    return MUNIT_OK;
+}
+
 static MunitTest str_tests[] = {
     { "/ptr_sso",       test_str_ptr_sso,       str_setup, str_teardown, 0, NULL },
     { "/ptr_long",      test_str_ptr_long,       str_setup, str_teardown, 0, NULL },
@@ -922,6 +949,7 @@ static MunitTest str_tests[] = {
     { "/t_hash_empty",         test_str_t_hash_empty,         str_setup, str_teardown, 0, NULL },
     { "/vec_concat_pooled_rebase",  test_str_vec_concat_pooled_rebase, str_setup, str_teardown, 0, NULL },
     { "/vec_concat_nulls",    test_str_vec_concat_nulls,         str_setup, str_teardown, 0, NULL },
+    { "/vec_slice_null",      test_str_vec_slice_null,           str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

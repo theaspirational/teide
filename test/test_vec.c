@@ -481,6 +481,29 @@ static MunitResult test_vec_slice_range(const void* params, void* fixture) {
     return MUNIT_OK;
 }
 
+/* ---- vec_slice_null ---------------------------------------------------- */
+
+static MunitResult test_vec_slice_null(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    int64_t vals[] = {10, 20, 30, 40};
+    td_t* v = td_vec_from_raw(TD_I64, vals, 4);
+    td_vec_set_null(v, 1, true);
+    td_vec_set_null(v, 3, true);
+
+    td_t* s = td_vec_slice(v, 1, 2);
+    munit_assert_ptr_not_null(s);
+    munit_assert_false(TD_IS_ERR(s));
+
+    /* Slice index 0 = parent index 1 = null */
+    munit_assert_true(td_vec_is_null(s, 0));
+    /* Slice index 1 = parent index 2 = not null */
+    munit_assert_false(td_vec_is_null(s, 1));
+
+    td_release(s);
+    td_release(v);
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest vec_tests[] = {
@@ -503,6 +526,7 @@ static MunitTest vec_tests[] = {
     { "/bool",               test_vec_bool,                vec_setup, vec_teardown, 0, NULL },
     { "/concat_type_mismatch", test_vec_concat_type_mismatch, vec_setup, vec_teardown, 0, NULL },
     { "/slice_range",        test_vec_slice_range,         vec_setup, vec_teardown, 0, NULL },
+    { "/slice_null",         test_vec_slice_null,          vec_setup, vec_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 

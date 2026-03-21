@@ -782,6 +782,14 @@ td_t* td_embedding_new(int64_t nrows, int32_t dim) {
 bool td_vec_is_null(td_t* vec, int64_t idx) {
     if (!vec || TD_IS_ERR(vec)) return false;
     if (idx < 0 || idx >= vec->len) return false;
+
+    /* Slice: delegate to parent with adjusted index */
+    if (vec->attrs & TD_ATTR_SLICE) {
+        td_t* parent = vec->slice_parent;
+        int64_t pidx = vec->slice_offset + idx;
+        return td_vec_is_null(parent, pidx);
+    }
+
     if (!(vec->attrs & TD_ATTR_HAS_NULLS)) return false;
 
     if (vec->attrs & TD_ATTR_NULLMAP_EXT) {
