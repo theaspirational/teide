@@ -558,6 +558,7 @@ td_t* td_alloc(size_t data_size) {
 
 void td_free(td_t* v) {
     if (!v || TD_IS_ERR(v)) return;
+    if (v->attrs & TD_ATTR_ARENA) return;  /* arena-owned, bulk-freed */
 
     /* Guard: keep rc=1 while releasing children so buddy coalescing
      * won't merge this block prematurely (it checks buddy_rc==0). */
