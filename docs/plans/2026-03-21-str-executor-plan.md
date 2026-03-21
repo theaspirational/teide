@@ -594,7 +594,7 @@ git commit -m "feat: STRLEN for TD_STR — reads len directly from td_str_t elem
 
 ---
 
-### Task 5: UPPER / LOWER / TRIM for TD_STR
+### Task 5: UPPER / LOWER / TRIM for TD_STR [DONE]
 
 **Files:**
 - Modify: `src/ops/exec.c:10260-10299` (exec_string_unary)

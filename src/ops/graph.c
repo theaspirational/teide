@@ -490,10 +490,10 @@ td_op_t* td_ilike(td_graph_t* g, td_op_t* input, td_op_t* pattern) {
 }
 
 /* String ops */
-td_op_t* td_upper(td_graph_t* g, td_op_t* a)   { return make_unary(g, OP_UPPER, a, TD_SYM); }
-td_op_t* td_lower(td_graph_t* g, td_op_t* a)   { return make_unary(g, OP_LOWER, a, TD_SYM); }
+td_op_t* td_upper(td_graph_t* g, td_op_t* a)   { return make_unary(g, OP_UPPER, a, a->out_type == TD_STR ? TD_STR : TD_SYM); }
+td_op_t* td_lower(td_graph_t* g, td_op_t* a)   { return make_unary(g, OP_LOWER, a, a->out_type == TD_STR ? TD_STR : TD_SYM); }
 td_op_t* td_strlen(td_graph_t* g, td_op_t* a)  { return make_unary(g, OP_STRLEN, a, TD_I64); }
-td_op_t* td_trim_op(td_graph_t* g, td_op_t* a) { return make_unary(g, OP_TRIM, a, TD_SYM); }
+td_op_t* td_trim_op(td_graph_t* g, td_op_t* a) { return make_unary(g, OP_TRIM, a, a->out_type == TD_STR ? TD_STR : TD_SYM); }
 
 td_op_t* td_substr(td_graph_t* g, td_op_t* str, td_op_t* start, td_op_t* len) {
     /* 3-input: str=inputs[0], start=inputs[1], len stored via literal field */

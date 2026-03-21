@@ -2254,6 +2254,116 @@ static MunitResult test_graph_dump(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+/* ---- TD_STR UPPER ---- */
+static MunitResult test_exec_str_upper(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* up = td_upper(g, name);
+    td_t* result = td_execute(g, up);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_STR);
+    munit_assert_int(result->len, ==, 5);
+
+    size_t len;
+    const char* s0 = td_str_vec_get(result, 0, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, s0, "HELLO");
+
+    const char* s1 = td_str_vec_get(result, 1, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, s1, "WORLD");
+
+    const char* s4 = td_str_vec_get(result, 4, &len);
+    (void)s4;
+    munit_assert_size(len, ==, 0);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ---- TD_STR LOWER ---- */
+static MunitResult test_exec_str_lower(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* lo = td_lower(g, name);
+    td_t* result = td_execute(g, lo);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_STR);
+    munit_assert_int(result->len, ==, 5);
+
+    size_t len;
+    const char* s0 = td_str_vec_get(result, 0, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, s0, "hello");
+
+    const char* s1 = td_str_vec_get(result, 1, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, s1, "world");
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ---- TD_STR TRIM ---- */
+static MunitResult test_exec_str_trim(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+    td_t* tbl = make_str_table();
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* name = td_scan(g, "name");
+    td_op_t* tr = td_trim_op(g, name);
+    td_t* result = td_execute(g, tr);
+
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_STR);
+    munit_assert_int(result->len, ==, 5);
+
+    size_t len;
+    /* "  foo  " -> "foo" */
+    const char* s2 = td_str_vec_get(result, 2, &len);
+    munit_assert_size(len, ==, 3);
+    munit_assert_memory_equal(3, s2, "foo");
+
+    /* "hello" unchanged */
+    const char* s0 = td_str_vec_get(result, 0, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, s0, "hello");
+
+    /* "" stays empty */
+    const char* s4 = td_str_vec_get(result, 4, &len);
+    (void)s4;
+    munit_assert_size(len, ==, 0);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* ======================================================================
  * Suite
  * ====================================================================== */
@@ -2303,6 +2413,9 @@ static MunitTest exec_tests[] = {
     { "/str_ne",         test_exec_str_ne,            NULL, NULL, 0, NULL },
     { "/str_lt",         test_exec_str_lt,            NULL, NULL, 0, NULL },
     { "/str_strlen",     test_exec_str_strlen,        NULL, NULL, 0, NULL },
+    { "/str_upper",      test_exec_str_upper,         NULL, NULL, 0, NULL },
+    { "/str_lower",      test_exec_str_lower,         NULL, NULL, 0, NULL },
+    { "/str_trim",       test_exec_str_trim,          NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 

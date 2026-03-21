@@ -10371,27 +10371,47 @@ static inline void sym_elem(const td_t* input, int64_t i,
     *out_len = td_str_len(atom);
 }
 
-/* UPPER / LOWER / TRIM — unary SYM → SYM */
+/* UPPER / LOWER / TRIM — unary SYM/STR → SYM/STR */
 static td_t* exec_string_unary(td_graph_t* g, td_op_t* op) {
     td_t* input = exec_node(g, op->inputs[0]);
     if (!input || TD_IS_ERR(input)) return input;
 
     int64_t len = input->len;
-    td_t* result = td_vec_new(TD_SYM, len);
+    bool is_str = (input->type == TD_STR);
+
+    td_t* result;
+    if (is_str) {
+        result = td_vec_new(TD_STR, len);
+    } else {
+        result = td_vec_new(TD_SYM, len);
+    }
     if (!result || TD_IS_ERR(result)) { td_release(input); return result; }
-    result->len = len;
-    int64_t* dst = (int64_t*)td_data(result);
+    if (!is_str) result->len = len;
+    int64_t* sym_dst = is_str ? NULL : (int64_t*)td_data(result);
+
+    const td_str_t* str_elems = is_str ? (const td_str_t*)td_data(input) : NULL;
+    const char* str_pool = (is_str && input->str_pool) ? (const char*)td_data(input->str_pool) : NULL;
 
     uint16_t opc = op->opcode;
     for (int64_t i = 0; i < len; i++) {
         const char* sp; size_t sl;
-        sym_elem(input, i, &sp, &sl);
+        if (is_str) {
+            sp = td_str_t_ptr(&str_elems[i], str_pool);
+            sl = str_elems[i].len;
+        } else {
+            sym_elem(input, i, &sp, &sl);
+        }
+
         char sbuf[8192];
         char* buf = sbuf;
         td_t* dyn_hdr = NULL;
         if (sl >= sizeof(sbuf)) {
             buf = (char*)scratch_alloc(&dyn_hdr, sl + 1);
-            if (!buf) { dst[i] = td_sym_intern("", 0); continue; }
+            if (!buf) {
+                if (is_str) { result = td_str_vec_append(result, "", 0); }
+                else { sym_dst[i] = td_sym_intern("", 0); }
+                continue;
+            }
         }
         size_t out_len = sl;
         if (opc == OP_UPPER) {
@@ -10405,8 +10425,13 @@ static td_t* exec_string_unary(td_graph_t* g, td_op_t* op) {
             out_len = end - start;
             memcpy(buf, sp + start, out_len);
         }
-        buf[out_len] = '\0';
-        dst[i] = td_sym_intern(buf, out_len);
+
+        if (is_str) {
+            result = td_str_vec_append(result, buf, out_len);
+        } else {
+            buf[out_len] = '\0';
+            sym_dst[i] = td_sym_intern(buf, out_len);
+        }
         scratch_free(dyn_hdr);
     }
     td_release(input);
