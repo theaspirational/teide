@@ -31,6 +31,8 @@ Core abstraction is `td_t` — a 32-byte block header. Every object (atom, vecto
 2. Optimizer: type inference → constant fold → SIP → factorize → predicate pushdown → filter reorder → fusion → DCE
 3. Fused executor: bytecode over register slots, morsel-by-morsel (1024 elements)
 
+**Strings**: two representations — `TD_SYM` (dictionary-encoded symbol columns, integer indices into global intern table) and `TD_STR` (variable-length 16-byte `td_str_t` elements: strings <= 12 bytes stored inline, longer strings in a per-vector pool with 4-byte prefix for fast comparison rejection). All string opcodes (comparisons, STRLEN, UPPER/LOWER/TRIM, SUBSTR, REPLACE, CONCAT, IF) support both types. Access via `td_str_vec_get()`; executor uses `str_resolve()` to get element array + pool pointer. Hash via `td_str_t_hash()`, compare via `td_str_t_cmp()`/`td_str_t_eq()`.
+
 **Graph engine**: CSR edge indices (`td_csr_t`, `td_rel_t`) alongside columnar tables.
 - Storage: double-indexed CSR (forward + reverse), persisted as `.col` files, supports mmap
 - Opcodes: `OP_EXPAND` (1-hop), `OP_VAR_EXPAND` (BFS), `OP_SHORTEST_PATH`, `OP_WCO_JOIN` (LFTJ)
@@ -66,6 +68,8 @@ test/test_csr.c             Graph engine tests (42 tests)
 test/test_opt.c             Optimizer pass tests (filter reorder, predicate pushdown)
 test/test_store.c           Storage tests (file I/O, sym persistence, col bounds validation)
 test/test_sym.c             Sym table tests (save/load roundtrip, append-only, corruption)
+test/test_str.c             TD_STR string vector tests (slice, concat, hash, comparisons)
+test/test_exec.c            Executor tests (string ops, comparisons, conditionals, joins)
 src/vec/vec.c               Vector operations — append, set, concat, slice, TD_STR string vectors with pool
 src/io/csv.{h,c}           CSV loader — mmap, parallel parse, null handling, sym merge
 bench/bench_csv*.c          CSV loading benchmarks (build with -DTEIDE_BENCH=ON)
