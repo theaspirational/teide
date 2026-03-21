@@ -1378,6 +1378,16 @@ static void atom_to_str_t(td_t* atom, td_str_t* out, const char** out_pool) {
     }
 }
 
+/* Resolve TD_STR vec to data owner, accounting for slices.
+ * Returns element pointer (already offset for slices) and pool pointer. */
+static inline void str_resolve(const td_t* v, const td_str_t** elems,
+                               const char** pool) {
+    const td_t* owner = (v->attrs & TD_ATTR_SLICE) ? v->slice_parent : v;
+    int64_t base = (v->attrs & TD_ATTR_SLICE) ? v->slice_offset : 0;
+    *elems = (const td_str_t*)td_data((td_t*)owner) + base;
+    *pool = owner->str_pool ? (const char*)td_data(owner->str_pool) : NULL;
+}
+
 /* Inner loop for binary element-wise string comparison over [start, end) */
 static void binary_range_str(td_op_t* op, td_t* lhs, td_t* rhs, td_t* result,
                              bool l_scalar, bool r_scalar,
@@ -1386,10 +1396,12 @@ static void binary_range_str(td_op_t* op, td_t* lhs, td_t* rhs, td_t* result,
     int64_t n = end - start;
     uint16_t opc = op->opcode;
 
-    const td_str_t* l_elems = l_scalar ? NULL : (const td_str_t*)td_data(lhs) + start;
-    const td_str_t* r_elems = r_scalar ? NULL : (const td_str_t*)td_data(rhs) + start;
-    const char* l_pool = (!l_scalar && lhs->str_pool) ? (const char*)td_data(lhs->str_pool) : NULL;
-    const char* r_pool = (!r_scalar && rhs->str_pool) ? (const char*)td_data(rhs->str_pool) : NULL;
+    const td_str_t* l_elems = NULL;
+    const td_str_t* r_elems = NULL;
+    const char* l_pool = NULL;
+    const char* r_pool = NULL;
+    if (!l_scalar) { str_resolve(lhs, &l_elems, &l_pool); l_elems += start; }
+    if (!r_scalar) { str_resolve(rhs, &r_elems, &r_pool); r_elems += start; }
 
     /* For scalar side, build a single td_str_t */
     td_str_t l_scalar_elem = {0}, r_scalar_elem = {0};
@@ -10442,8 +10454,9 @@ static td_t* exec_string_unary(td_graph_t* g, td_op_t* op) {
     if (!is_str) result->len = len;
     int64_t* sym_dst = is_str ? NULL : (int64_t*)td_data(result);
 
-    const td_str_t* str_elems = is_str ? (const td_str_t*)td_data(input) : NULL;
-    const char* str_pool = (is_str && input->str_pool) ? (const char*)td_data(input->str_pool) : NULL;
+    const td_str_t* str_elems = NULL;
+    const char* str_pool = NULL;
+    if (is_str) str_resolve(input, &str_elems, &str_pool);
 
     uint16_t opc = op->opcode;
     for (int64_t i = 0; i < len; i++) {
@@ -10503,7 +10516,8 @@ static td_t* exec_strlen(td_graph_t* g, td_op_t* op) {
     int64_t* dst = (int64_t*)td_data(result);
 
     if (input->type == TD_STR) {
-        const td_str_t* elems = (const td_str_t*)td_data(input);
+        const td_str_t* elems; const char* pool;
+        str_resolve(input, &elems, &pool);
         for (int64_t i = 0; i < len; i++)
             dst[i] = (int64_t)elems[i].len;
     } else {
@@ -10543,8 +10557,9 @@ static td_t* exec_substr(td_graph_t* g, td_op_t* op) {
     if (!is_str) result->len = nrows;
     int64_t* sym_dst = is_str ? NULL : (int64_t*)td_data(result);
 
-    const td_str_t* str_elems = is_str ? (const td_str_t*)td_data(input) : NULL;
-    const char* str_pool = (is_str && input->str_pool) ? (const char*)td_data(input->str_pool) : NULL;
+    const td_str_t* str_elems = NULL;
+    const char* str_pool = NULL;
+    if (is_str) str_resolve(input, &str_elems, &str_pool);
 
     /* start_v and len_v may be atom scalars or vectors.
      * Handle TD_I32 vectors correctly (read as int32_t, not int64_t). */
@@ -10636,8 +10651,9 @@ static td_t* exec_replace(td_graph_t* g, td_op_t* op) {
     if (!is_str) result->len = nrows;
     int64_t* sym_dst = is_str ? NULL : (int64_t*)td_data(result);
 
-    const td_str_t* str_elems = is_str ? (const td_str_t*)td_data(input) : NULL;
-    const char* str_pool = (is_str && input->str_pool) ? (const char*)td_data(input->str_pool) : NULL;
+    const td_str_t* str_elems = NULL;
+    const char* str_pool = NULL;
+    if (is_str) str_resolve(input, &str_elems, &str_pool);
 
     for (int64_t i = 0; i < nrows; i++) {
         const char* sp; size_t sl;
@@ -10752,7 +10768,8 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
         for (int a = 0; a < n_args; a++) {
             int8_t t = args[a]->type;
             if (t == TD_STR) {
-                const td_str_t* elems = (const td_str_t*)td_data(args[a]);
+                const td_str_t* elems; const char* p;
+                str_resolve(args[a], &elems, &p);
                 total += elems[r].len;
             } else if (TD_IS_SYM(t)) {
                 const char* sp; size_t sl;
@@ -10775,8 +10792,8 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
         for (int a = 0; a < n_args; a++) {
             int8_t t = args[a]->type;
             if (t == TD_STR) {
-                const td_str_t* elems = (const td_str_t*)td_data(args[a]);
-                const char* pool = args[a]->str_pool ? (const char*)td_data(args[a]->str_pool) : NULL;
+                const td_str_t* elems; const char* pool;
+                str_resolve(args[a], &elems, &pool);
                 const char* sp = td_str_t_ptr(&elems[r], pool);
                 size_t sl = elems[r].len;
                 if (bi + sl < buf_cap) { memcpy(buf + bi, sp, sl); bi += sl; }
