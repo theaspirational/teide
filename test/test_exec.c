@@ -2218,6 +2218,8 @@ static MunitResult test_exec_str_le(const void* params, void* data) {
     uint8_t* d = (uint8_t*)td_data(result);
     munit_assert_int(d[0], ==, 1);  /* "hello" <= "hello" -> true */
     munit_assert_int(d[1], ==, 1);  /* "WORLD" <= "hello" -> true (W=0x57 < h=0x68) */
+    munit_assert_int(d[2], ==, 1);  /* "  foo  " <= "hello" -> true (space < h) */
+    munit_assert_int(d[3], ==, 1);  /* "bar_baz" <= "hello" -> true (b < h) */
     munit_assert_int(d[4], ==, 1);  /* "" <= "hello" -> true */
 
     td_release(result);
@@ -2246,6 +2248,9 @@ static MunitResult test_exec_str_gt(const void* params, void* data) {
     munit_assert_int(result->len, ==, 5);
     uint8_t* d = (uint8_t*)td_data(result);
     munit_assert_int(d[0], ==, 0);  /* "hello" > "hello" -> false */
+    munit_assert_int(d[1], ==, 0);  /* "WORLD" > "hello" -> false */
+    munit_assert_int(d[2], ==, 0);  /* "  foo  " > "hello" -> false */
+    munit_assert_int(d[3], ==, 0);  /* "bar_baz" > "hello" -> false */
     munit_assert_int(d[4], ==, 0);  /* "" > "hello" -> false */
 
     td_release(result);
@@ -2274,6 +2279,9 @@ static MunitResult test_exec_str_ge(const void* params, void* data) {
     munit_assert_int(result->len, ==, 5);
     uint8_t* d = (uint8_t*)td_data(result);
     munit_assert_int(d[0], ==, 1);  /* "hello" >= "hello" -> true */
+    munit_assert_int(d[1], ==, 0);  /* "WORLD" >= "hello" -> false */
+    munit_assert_int(d[2], ==, 0);  /* "  foo  " >= "hello" -> false */
+    munit_assert_int(d[3], ==, 0);  /* "bar_baz" >= "hello" -> false */
     munit_assert_int(d[4], ==, 0);  /* "" >= "hello" -> false */
 
     td_release(result);

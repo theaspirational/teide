@@ -457,8 +457,10 @@ td_op_t* td_if(td_graph_t* g, td_op_t* cond, td_op_t* then_val, td_op_t* else_va
     uint32_t then_id = then_val->id;
     uint32_t else_id = else_val->id;
     int8_t out_type = promote(then_val->out_type, else_val->out_type);
-    /* IF preserves string types: SYM stays SYM (not I64 from promote) */
-    if (then_val->out_type == TD_SYM || else_val->out_type == TD_SYM)
+    /* IF preserves string types: TD_STR wins over TD_SYM; SYM stays SYM (not I64) */
+    if (then_val->out_type == TD_STR || else_val->out_type == TD_STR)
+        out_type = TD_STR;
+    else if (then_val->out_type == TD_SYM || else_val->out_type == TD_SYM)
         out_type = TD_SYM;
     uint32_t est = cond->est_rows;
 

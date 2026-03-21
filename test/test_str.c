@@ -824,12 +824,10 @@ static MunitResult test_str_t_hash_empty(const void* params, void* fixture) {
     return MUNIT_OK;
 }
 
-static MunitResult test_str_vec_concat_overflow_guard(const void* params, void* fixture) {
+static MunitResult test_str_vec_concat_pooled_rebase(const void* params, void* fixture) {
     (void)params; (void)fixture;
-    /* We can't actually allocate 4GB pools, but we can verify the guard
-     * rejects when total_pool would exceed UINT32_MAX.
-     * Instead, test that normal concat works and that the guard code path
-     * exists by testing concat of two vectors with pools. */
+    /* Verify that concat of two pooled TD_STR vectors correctly rebases
+     * pool offsets so that the second vector's strings resolve correctly. */
     td_t* a = td_vec_new(TD_STR, 2);
     a = td_str_vec_append(a, "this is a long pooled string a!", 30);
     td_t* b = td_vec_new(TD_STR, 2);
@@ -922,7 +920,7 @@ static MunitTest str_tests[] = {
     { "/t_hash_inline",        test_str_t_hash_inline,        str_setup, str_teardown, 0, NULL },
     { "/t_hash_pooled",        test_str_t_hash_pooled,        str_setup, str_teardown, 0, NULL },
     { "/t_hash_empty",         test_str_t_hash_empty,         str_setup, str_teardown, 0, NULL },
-    { "/vec_concat_overflow",  test_str_vec_concat_overflow_guard, str_setup, str_teardown, 0, NULL },
+    { "/vec_concat_pooled_rebase",  test_str_vec_concat_pooled_rebase, str_setup, str_teardown, 0, NULL },
     { "/vec_concat_nulls",    test_str_vec_concat_nulls,         str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };

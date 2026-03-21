@@ -160,6 +160,7 @@ static inline void col_propagate_str_pool(td_t* dst, const td_t* src) {
     if (src->type != TD_STR) return;
     const td_t* owner = (src->attrs & TD_ATTR_SLICE) ? src->slice_parent : src;
     if (owner->str_pool) {
+        if (dst->str_pool) td_release(dst->str_pool);
         td_retain(owner->str_pool);
         dst->str_pool = owner->str_pool;
     }
@@ -10557,12 +10558,8 @@ static td_t* exec_string_unary(td_graph_t* g, td_op_t* op) {
         if (sl >= sizeof(sbuf)) {
             buf = (char*)scratch_alloc(&dyn_hdr, sl + 1);
             if (!buf) {
-                if (is_str) {
-                    result = td_str_vec_append(result, "", 0);
-                    if (TD_IS_ERR(result)) break;
-                }
-                else { sym_dst[i] = td_sym_intern("", 0); }
-                continue;
+                td_release(result);
+                return TD_ERR_PTR(TD_ERR_OOM);
             }
         }
         size_t out_len = sl;
@@ -10772,12 +10769,8 @@ static td_t* exec_replace(td_graph_t* g, td_op_t* op) {
         if (worst > sizeof(sbuf)) {
             buf = (char*)scratch_alloc(&dyn_hdr, worst);
             if (!buf) {
-                if (is_str) {
-                    result = td_str_vec_append(result, "", 0);
-                    if (TD_IS_ERR(result)) break;
-                }
-                else { sym_dst[i] = td_sym_intern("", 0); }
-                continue;
+                td_release(result);
+                return TD_ERR_PTR(TD_ERR_OOM);
             }
         }
         size_t buf_cap = dyn_hdr ? worst : sizeof(sbuf);
@@ -10869,7 +10862,8 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
                 total += elems[ar].len;
             } else if (TD_IS_SYM(t)) {
                 const char* sp; size_t sl;
-                sym_elem(args[a], r, &sp, &sl);
+                int64_t ar = td_is_atom(args[a]) ? 0 : (r < args[a]->len ? r : 0);
+                sym_elem(args[a], ar, &sp, &sl);
                 total += sl;
             } else if (t == TD_ATOM_STR) {
                 total += td_str_len(args[a]);
@@ -10882,13 +10876,8 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
         if (total >= sizeof(sbuf)) {
             buf = (char*)scratch_alloc(&dyn_hdr, total + 1);
             if (!buf) {
-                /* OOM: append empty string rather than silently truncating */
-                if (out_str) {
-                    result = td_str_vec_append(result, "", 0);
-                    if (TD_IS_ERR(result)) break;
-                }
-                else { dst[r] = td_sym_intern("", 0); }
-                continue;
+                if (!out_str) td_release(result);
+                return TD_ERR_PTR(TD_ERR_OOM);
             }
             buf_cap = total + 1;
         }
@@ -10904,7 +10893,8 @@ static td_t* exec_concat(td_graph_t* g, td_op_t* op) {
                 if (bi + sl < buf_cap) { memcpy(buf + bi, sp, sl); bi += sl; }
             } else if (TD_IS_SYM(t)) {
                 const char* sp; size_t sl;
-                sym_elem(args[a], r, &sp, &sl);
+                int64_t ar = td_is_atom(args[a]) ? 0 : (r < args[a]->len ? r : 0);
+                sym_elem(args[a], ar, &sp, &sl);
                 if (bi + sl < buf_cap) { memcpy(buf + bi, sp, sl); bi += sl; }
             } else if (t == TD_ATOM_STR) {
                 const char* sp = td_str_ptr(args[a]);
