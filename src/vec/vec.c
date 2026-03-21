@@ -551,9 +551,10 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
     if (vec->type != TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
     if (len > UINT32_MAX) return TD_ERR_PTR(TD_ERR_RANGE);
 
+    td_t* original = vec;
     vec = td_cow(vec);
     if (!vec || TD_IS_ERR(vec)) return vec;
-    if (!str_pool_cow(vec)) return TD_ERR_PTR(TD_ERR_OOM);
+    if (!str_pool_cow(vec)) goto fail_oom;
 
     int64_t pool_off = 0;
     if (len > TD_STR_INLINE_MAX) {
@@ -562,7 +563,7 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
             vec->str_pool = td_alloc(init_pool);
             if (!vec->str_pool || TD_IS_ERR(vec->str_pool)) {
                 vec->str_pool = NULL;
-                return TD_ERR_PTR(TD_ERR_OOM);
+                goto fail_oom;
             }
             vec->str_pool->type = TD_CHAR;
             vec->str_pool->len = 0;
@@ -575,15 +576,15 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
             size_t new_cap = pool_cap;
             if (new_cap == 0) new_cap = 256;
             while (new_cap < need) {
-                if (new_cap > SIZE_MAX / 2) return TD_ERR_PTR(TD_ERR_OOM);
+                if (new_cap > SIZE_MAX / 2) goto fail_oom;
                 new_cap *= 2;
             }
             td_t* np = td_scratch_realloc(vec->str_pool, new_cap);
-            if (!np || TD_IS_ERR(np)) return TD_ERR_PTR(TD_ERR_OOM);
+            if (!np || TD_IS_ERR(np)) goto fail_oom;
             vec->str_pool = np;
         }
 
-        if ((uint64_t)pool_used > UINT32_MAX) return TD_ERR_PTR(TD_ERR_RANGE);
+        if ((uint64_t)pool_used > UINT32_MAX) goto fail_range;
         pool_off = pool_used;
     }
 
@@ -595,13 +596,13 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
         else {
             size_t s2 = 32;
             while (s2 < new_data_size) {
-                if (s2 > SIZE_MAX / 2) return TD_ERR_PTR(TD_ERR_OOM);
+                if (s2 > SIZE_MAX / 2) goto fail_oom;
                 s2 *= 2;
             }
             new_data_size = s2;
         }
         td_t* nv = td_scratch_realloc(vec, new_data_size);
-        if (!nv || TD_IS_ERR(nv)) return TD_ERR_PTR(TD_ERR_OOM);
+        if (!nv || TD_IS_ERR(nv)) goto fail_oom;
         vec = nv;
     }
 
@@ -623,6 +624,13 @@ td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
 
     vec->len++;
     return vec;
+
+fail_oom:
+    if (vec != original) td_release(vec);
+    return TD_ERR_PTR(TD_ERR_OOM);
+fail_range:
+    if (vec != original) td_release(vec);
+    return TD_ERR_PTR(TD_ERR_RANGE);
 }
 
 /* --------------------------------------------------------------------------
@@ -667,12 +675,12 @@ td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
     if (!vec || TD_IS_ERR(vec)) return vec;
     if (vec->type != TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
     if (idx < 0 || idx >= vec->len) return TD_ERR_PTR(TD_ERR_RANGE);
+    if (len > UINT32_MAX) return TD_ERR_PTR(TD_ERR_RANGE);
 
+    td_t* original = vec;
     vec = td_cow(vec);
     if (!vec || TD_IS_ERR(vec)) return vec;
-    if (!str_pool_cow(vec)) return TD_ERR_PTR(TD_ERR_OOM);
-
-    if (len > UINT32_MAX) return TD_ERR_PTR(TD_ERR_RANGE);
+    if (!str_pool_cow(vec)) goto fail_oom;
 
     td_str_t* elem = &((td_str_t*)td_data(vec))[idx];
 
@@ -690,7 +698,7 @@ td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
             vec->str_pool = td_alloc(init_pool);
             if (!vec->str_pool || TD_IS_ERR(vec->str_pool)) {
                 vec->str_pool = NULL;
-                return TD_ERR_PTR(TD_ERR_OOM);
+                goto fail_oom;
             }
             vec->str_pool->type = TD_CHAR;
             vec->str_pool->len = 0;
@@ -704,15 +712,15 @@ td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
             size_t new_cap = pool_cap;
             if (new_cap == 0) new_cap = 256;
             while (new_cap < need) {
-                if (new_cap > SIZE_MAX / 2) return TD_ERR_PTR(TD_ERR_OOM);
+                if (new_cap > SIZE_MAX / 2) goto fail_oom;
                 new_cap *= 2;
             }
             td_t* np = td_scratch_realloc(vec->str_pool, new_cap);
-            if (!np || TD_IS_ERR(np)) return TD_ERR_PTR(TD_ERR_OOM);
+            if (!np || TD_IS_ERR(np)) goto fail_oom;
             vec->str_pool = np;
         }
 
-        if ((uint64_t)pool_used > UINT32_MAX) return TD_ERR_PTR(TD_ERR_RANGE);
+        if ((uint64_t)pool_used > UINT32_MAX) goto fail_range;
 
         /* Pool alloc succeeded — now safe to modify the element */
         if (!td_str_is_inline(elem) && elem->len > 0 && vec->str_pool) {
@@ -729,6 +737,13 @@ td_t* td_str_vec_set(td_t* vec, int64_t idx, const char* s, size_t len) {
     }
 
     return vec;
+
+fail_oom:
+    if (vec != original) td_release(vec);
+    return TD_ERR_PTR(TD_ERR_OOM);
+fail_range:
+    if (vec != original) td_release(vec);
+    return TD_ERR_PTR(TD_ERR_RANGE);
 }
 
 /* --------------------------------------------------------------------------

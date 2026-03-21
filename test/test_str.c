@@ -971,6 +971,70 @@ static MunitResult test_str_vec_slice_null(const void* params, void* fixture) {
     return MUNIT_OK;
 }
 
+static MunitResult test_str_vec_cow_append(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "hello", 5);
+    v = td_str_vec_append(v, "this is a long string!", 22);
+
+    /* Share the vector (rc=2) */
+    td_retain(v);
+    td_t* shared = v;
+
+    /* Append to shared vec — triggers COW */
+    v = td_str_vec_append(v, "new", 3);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+    munit_assert_int(td_len(v), ==, 3);
+
+    /* Original should still have 2 elements */
+    munit_assert_int(td_len(shared), ==, 2);
+
+    /* Both should have correct data */
+    size_t len;
+    const char* p = td_str_vec_get(v, 2, &len);
+    munit_assert_size(len, ==, 3);
+    munit_assert_memory_equal(3, p, "new");
+
+    const char* orig = td_str_vec_get(shared, 1, &len);
+    munit_assert_size(len, ==, 22);
+    munit_assert_memory_equal(22, orig, "this is a long string!");
+
+    td_release(v);
+    td_release(shared);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_vec_cow_set(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+    v = td_str_vec_append(v, "hello", 5);
+    v = td_str_vec_append(v, "world", 5);
+
+    /* Share */
+    td_retain(v);
+    td_t* shared = v;
+
+    /* Set on shared vec — triggers COW */
+    v = td_str_vec_set(v, 0, "changed", 7);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+
+    /* Original preserved */
+    size_t len;
+    const char* orig = td_str_vec_get(shared, 0, &len);
+    munit_assert_size(len, ==, 5);
+    munit_assert_memory_equal(5, orig, "hello");
+
+    const char* changed = td_str_vec_get(v, 0, &len);
+    munit_assert_size(len, ==, 7);
+    munit_assert_memory_equal(7, changed, "changed");
+
+    td_release(v);
+    td_release(shared);
+    return MUNIT_OK;
+}
+
 static MunitTest str_tests[] = {
     { "/ptr_sso",       test_str_ptr_sso,       str_setup, str_teardown, 0, NULL },
     { "/ptr_long",      test_str_ptr_long,       str_setup, str_teardown, 0, NULL },
@@ -1014,6 +1078,8 @@ static MunitTest str_tests[] = {
     { "/vec_concat_pooled_rebase",  test_str_vec_concat_pooled_rebase, str_setup, str_teardown, 0, NULL },
     { "/vec_concat_nulls",    test_str_vec_concat_nulls,         str_setup, str_teardown, 0, NULL },
     { "/vec_slice_null",      test_str_vec_slice_null,           str_setup, str_teardown, 0, NULL },
+    { "/vec_cow_append",      test_str_vec_cow_append,           str_setup, str_teardown, 0, NULL },
+    { "/vec_cow_set",         test_str_vec_cow_set,              str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 
