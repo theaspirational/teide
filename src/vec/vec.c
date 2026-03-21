@@ -383,6 +383,52 @@ void td_vec_set_null(td_t* vec, int64_t idx, bool is_null) {
 }
 
 /* --------------------------------------------------------------------------
+ * td_str_vec_append — append a string to a TD_STR vector
+ *
+ * Strings <= 12 bytes are inlined in the td_str_t element.
+ * Strings > 12 bytes go to the pool (implemented in a later task).
+ * -------------------------------------------------------------------------- */
+
+td_t* td_str_vec_append(td_t* vec, const char* s, size_t len) {
+    if (!vec || TD_IS_ERR(vec)) return vec;
+    if (vec->type != TD_STR) return TD_ERR_PTR(TD_ERR_TYPE);
+
+    vec = td_cow(vec);
+    if (!vec || TD_IS_ERR(vec)) return vec;
+
+    int64_t cap = vec_capacity(vec);
+    if (vec->len >= cap) {
+        size_t new_data_size = (size_t)(vec->len + 1) * sizeof(td_str_t);
+        if (new_data_size < 32) new_data_size = 32;
+        else {
+            size_t s2 = 32;
+            while (s2 < new_data_size) {
+                if (s2 > SIZE_MAX / 2) return TD_ERR_PTR(TD_ERR_OOM);
+                s2 *= 2;
+            }
+            new_data_size = s2;
+        }
+        td_t* nv = td_scratch_realloc(vec, new_data_size);
+        if (!nv || TD_IS_ERR(nv)) return nv;
+        vec = nv;
+    }
+
+    td_str_t* elem = &((td_str_t*)td_data(vec))[vec->len];
+    memset(elem, 0, sizeof(td_str_t));
+    elem->len = (uint32_t)len;
+
+    if (len <= TD_STR_INLINE_MAX) {
+        if (len > 0) memcpy(elem->data, s, len);
+    } else {
+        /* Pool path — implemented in Task 4 */
+        return TD_ERR_PTR(TD_ERR_TYPE);
+    }
+
+    vec->len++;
+    return vec;
+}
+
+/* --------------------------------------------------------------------------
  * td_embedding_new — create a flat F32 vector for N*D embedding storage
  * -------------------------------------------------------------------------- */
 

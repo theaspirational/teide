@@ -167,7 +167,7 @@ git commit -m "feat: td_vec_new supports TD_STR — allocates td_str_t element a
 
 ---
 
-### Task 3: td_str_vec_append — inline strings (≤12 bytes)
+### Task 3: td_str_vec_append — inline strings (≤12 bytes) [x]
 
 **Files:**
 - Modify: `src/vec/vec.c`

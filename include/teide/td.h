@@ -770,6 +770,10 @@ td_t* td_vec_from_raw(int8_t type, const void* data, int64_t count);
 void  td_vec_set_null(td_t* vec, int64_t idx, bool is_null);
 bool  td_vec_is_null(td_t* vec, int64_t idx);
 
+/* ===== String Vector API ===== */
+
+td_t* td_str_vec_append(td_t* vec, const char* s, size_t len);
+
 /* ===== String API ===== */
 
 const char* td_str_ptr(td_t* s);

@@ -175,6 +175,64 @@ static MunitResult test_str_vec_new_zero_cap(const void* params, void* fixture) 
     return MUNIT_OK;
 }
 
+/* ---- str_vec_append inline ---------------------------------------------- */
+
+static MunitResult test_str_vec_append_inline(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+
+    /* Append a short string (fits in 12 bytes) */
+    v = td_str_vec_append(v, "hello", 5);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+    munit_assert_int(td_len(v), ==, 1);
+
+    /* Verify element is inline */
+    td_str_t* elems = (td_str_t*)td_data(v);
+    munit_assert_uint(elems[0].len, ==, 5);
+    munit_assert_memory_equal(5, elems[0].data, "hello");
+
+    /* Pool should still be NULL (no long strings) */
+    munit_assert_null(v->str_pool);
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_vec_append_inline_12(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+
+    /* Exactly 12 bytes — should still inline */
+    v = td_str_vec_append(v, "123456789012", 12);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+
+    td_str_t* elems = (td_str_t*)td_data(v);
+    munit_assert_uint(elems[0].len, ==, 12);
+    munit_assert_memory_equal(12, elems[0].data, "123456789012");
+    munit_assert_null(v->str_pool);
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
+static MunitResult test_str_vec_append_empty(const void* params, void* fixture) {
+    (void)params; (void)fixture;
+    td_t* v = td_vec_new(TD_STR, 4);
+
+    v = td_str_vec_append(v, "", 0);
+    munit_assert_ptr_not_null(v);
+    munit_assert_false(TD_IS_ERR(v));
+
+    td_str_t* elems = (td_str_t*)td_data(v);
+    munit_assert_uint(elems[0].len, ==, 0);
+    munit_assert_null(v->str_pool);
+
+    td_release(v);
+    return MUNIT_OK;
+}
+
 /* ---- Suite definition -------------------------------------------------- */
 
 static MunitTest str_tests[] = {
@@ -186,6 +244,9 @@ static MunitTest str_tests[] = {
     { "/cmp_prefix",    test_str_cmp_prefix,      str_setup, str_teardown, 0, NULL },
     { "/vec_new",       test_str_vec_new,         str_setup, str_teardown, 0, NULL },
     { "/vec_new_zero",  test_str_vec_new_zero_cap, str_setup, str_teardown, 0, NULL },
+    { "/vec_append_inline",    test_str_vec_append_inline,    str_setup, str_teardown, 0, NULL },
+    { "/vec_append_inline_12", test_str_vec_append_inline_12, str_setup, str_teardown, 0, NULL },
+    { "/vec_append_empty",     test_str_vec_append_empty,     str_setup, str_teardown, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },
 };
 
