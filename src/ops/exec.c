@@ -10219,8 +10219,13 @@ static td_t* exec_if(td_graph_t* g, td_op_t* op) {
     uint8_t* cond_p = (uint8_t*)td_data(cond_v);
 
     if (out_type == TD_F64) {
-        double t_scalar = then_scalar ? then_v->f64 : 0;
-        double e_scalar = else_scalar ? else_v->f64 : 0;
+        double t_scalar = 0, e_scalar = 0;
+        if (then_scalar) {
+            t_scalar = (then_v->type == TD_ATOM_F64 || then_v->type == -TD_F64) ? then_v->f64 : (double)then_v->i64;
+        }
+        if (else_scalar) {
+            e_scalar = (else_v->type == TD_ATOM_F64 || else_v->type == -TD_F64) ? else_v->f64 : (double)else_v->i64;
+        }
         double* t_arr = then_scalar ? NULL : (double*)td_data(then_v);
         double* e_arr = else_scalar ? NULL : (double*)td_data(else_v);
         double* dst = (double*)td_data(result);
@@ -10846,7 +10851,7 @@ static td_t* exec_replace(td_graph_t* g, td_op_t* op) {
         size_t bi = 0;
         for (size_t j = 0; j < sl; ) {
             if (from_len > 0 && j + from_len <= sl && memcmp(sp + j, from_str, from_len) == 0) {
-                if (bi + to_len < buf_cap) { memcpy(buf + bi, to_str, to_len); bi += to_len; }
+                if (bi + to_len <= buf_cap - 1) { memcpy(buf + bi, to_str, to_len); bi += to_len; }
                 j += from_len;
             } else {
                 if (bi < buf_cap - 1) buf[bi++] = sp[j];
@@ -12969,6 +12974,13 @@ static td_t* exec_pagerank(td_graph_t* g, td_op_t* op) {
     double base = (1.0 - damping) / (double)n;
 
     for (uint16_t iter = 0; iter < iters; iter++) {
+        /* Dangling node correction: sum rank of zero-out-degree nodes */
+        double dangling_sum = 0.0;
+        for (int64_t u = 0; u < n; u++) {
+            if (fwd_off[u + 1] == fwd_off[u]) dangling_sum += rank[u];
+        }
+        double adjusted_base = base + damping * dangling_sum / (double)n;
+
         for (int64_t v = 0; v < n; v++) {
             double sum = 0.0;
             /* Iterate over in-neighbors of v using reverse CSR */
@@ -12982,7 +12994,7 @@ static td_t* exec_pagerank(td_graph_t* g, td_op_t* op) {
                     sum += rank[u] / (double)out_deg;
                 }
             }
-            rank_new[v] = base + damping * sum;
+            rank_new[v] = adjusted_base + damping * sum;
         }
         /* Swap */
         double* tmp = rank;
@@ -13129,8 +13141,9 @@ typedef struct {
     int64_t  node;
 } dijk_entry_t;
 
-static void dijk_heap_push(dijk_entry_t* heap, int64_t* size,
+static void dijk_heap_push(dijk_entry_t* heap, int64_t* size, int64_t cap,
                             double dist, int64_t node) {
+    if (*size >= cap) return;  /* safety: prevent buffer overrun */
     int64_t i = (*size)++;
     heap[i].dist = dist;
     heap[i].node = node;
@@ -13180,7 +13193,8 @@ static double dijkstra_masked(
     double* dist,       /* pre-allocated double[n] */
     int64_t* parent,    /* pre-allocated int64_t[n] */
     dijk_entry_t* heap, /* pre-allocated */
-    bool* visited)      /* pre-allocated bool[n] */
+    bool* visited,      /* pre-allocated bool[n] */
+    int64_t heap_cap)   /* heap capacity for bounds guard */
 {
     for (int64_t i = 0; i < n; i++) {
         dist[i] = 1e308;
@@ -13190,7 +13204,7 @@ static double dijkstra_masked(
 
     dist[src_id] = 0.0;
     int64_t heap_size = 0;
-    dijk_heap_push(heap, &heap_size, 0.0, src_id);
+    dijk_heap_push(heap, &heap_size, heap_cap, 0.0, src_id);
 
     while (heap_size > 0) {
         dijk_entry_t top = dijk_heap_pop(heap, &heap_size);
@@ -13210,7 +13224,7 @@ static double dijkstra_masked(
             if (new_dist < dist[v]) {
                 dist[v] = new_dist;
                 parent[v] = u;
-                dijk_heap_push(heap, &heap_size, new_dist, v);
+                dijk_heap_push(heap, &heap_size, heap_cap, new_dist, v);
             }
         }
     }
@@ -13270,7 +13284,7 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
     dist[src_id] = 0.0;
 
     int64_t heap_size = 0;
-    dijk_heap_push(heap, &heap_size, 0.0, src_id);
+    dijk_heap_push(heap, &heap_size, heap_cap, 0.0, src_id);
 
     int64_t* fwd_off = (int64_t*)td_data(rel->fwd.offsets);
     int64_t* fwd_tgt = (int64_t*)td_data(rel->fwd.targets);
@@ -13292,7 +13306,7 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
             if (new_dist < dist[v]) {
                 dist[v] = new_dist;
                 depth[v] = depth[u] + 1;
-                dijk_heap_push(heap, &heap_size, new_dist, v);
+                dijk_heap_push(heap, &heap_size, heap_cap, new_dist, v);
             }
         }
     }
@@ -13414,7 +13428,7 @@ static td_t* exec_astar(td_graph_t* g, td_op_t* op,
     double dy = lon[src_id] - lon[dst_id];
     double h0 = sqrt(dx * dx + dy * dy);
     int64_t heap_size = 0;
-    dijk_heap_push(heap, &heap_size, h0, src_id);
+    dijk_heap_push(heap, &heap_size, heap_cap, h0, src_id);
 
     int64_t* fwd_off = (int64_t*)td_data(rel->fwd.offsets);
     int64_t* fwd_tgt = (int64_t*)td_data(rel->fwd.targets);
@@ -13441,7 +13455,7 @@ static td_t* exec_astar(td_graph_t* g, td_op_t* op,
                 double hdx = lat[v] - lat[dst_id];
                 double hdy = lon[v] - lon[dst_id];
                 double hv = sqrt(hdx * hdx + hdy * hdy);
-                dijk_heap_push(heap, &heap_size, new_dist + hv, v);
+                dijk_heap_push(heap, &heap_size, heap_cap, new_dist + hv, v);
             }
         }
     }
@@ -13576,7 +13590,7 @@ static td_t* exec_k_shortest(td_graph_t* g, td_op_t* op,
     /* Step 1: Find shortest path P[0] */
     double d = dijkstra_masked(fwd_off, fwd_tgt, fwd_row, weights, n,
                                 src_id, dst_id, NULL, NULL,
-                                dist_arr, parent, heap, vis);
+                                dist_arr, parent, heap, vis, heap_cap);
 
     if (d >= 1e308) {
         td_scratch_arena_reset(&arena);
@@ -13674,7 +13688,7 @@ static td_t* exec_k_shortest(td_graph_t* g, td_op_t* op,
             /* Dijkstra from spur to dst with masks */
             double spur_dist = dijkstra_masked(fwd_off, fwd_tgt, fwd_row, weights, n,
                                                 spur_node, dst_id, node_mask, edge_mask,
-                                                dist_arr, parent, heap, vis);
+                                                dist_arr, parent, heap, vis, heap_cap);
             if (spur_dist >= 1e308) continue;
 
             /* Reconstruct spur path */

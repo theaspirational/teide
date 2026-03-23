@@ -431,6 +431,16 @@ static td_err_t csr_load_impl(td_csr_t* csr, const char* dir, const char* prefix
         return TD_ERR_IO;
     }
 
+    /* Validate offset monotonicity: offsets[i] <= offsets[i+1] */
+    for (int64_t i = 0; i < csr->n_nodes; i++) {
+        if (off_data[i] < 0 || off_data[i] > off_data[i + 1]) {
+            td_release(csr->offsets); csr->offsets = NULL;
+            td_release(csr->targets); csr->targets = NULL;
+            if (csr->rowmap) { td_release(csr->rowmap); csr->rowmap = NULL; }
+            return TD_ERR_IO;  /* corrupt: non-monotonic offsets */
+        }
+    }
+
     csr->sorted = false;  /* caller sets if known */
     csr->props = NULL;
 
