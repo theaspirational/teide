@@ -1078,7 +1078,7 @@ td_t* td_read_csv_opts(const char* path, char delimiter, bool header,
     }
     if (ncols > CSV_MAX_COLS) {
         munmap(buf, file_size);
-        close(fd);
+        /* fd already closed after mmap (line 1044) — do not close again */
         return TD_ERR_PTR(TD_ERR_RANGE);  /* too many columns */
     }
 

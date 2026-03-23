@@ -1062,6 +1062,9 @@ td_rel_t* td_rel_load(const char* dir);
 td_rel_t* td_rel_mmap(const char* dir);
 void      td_rel_set_props(td_rel_t* rel, td_t* props);
 void      td_rel_free(td_rel_t* rel);
+const int64_t* td_rel_neighbors(td_rel_t* rel, int64_t node,
+                                uint8_t direction, int64_t* out_count);
+int64_t   td_rel_n_nodes(td_rel_t* rel, uint8_t direction);
 
 /* ===== Optimizer API ===== */
 

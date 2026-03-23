@@ -13233,12 +13233,14 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
     int64_t dst_id = !dst_val ? -1 : td_is_atom(dst_val) ? dst_val->i64 : ((int64_t*)td_data(dst_val))[0];
 
     if (src_id < 0 || src_id >= n) return TD_ERR_PTR(TD_ERR_RANGE);
+    if (dst_id != -1 && (dst_id < 0 || dst_id >= n)) return TD_ERR_PTR(TD_ERR_RANGE);
 
     /* Find weight column in edge properties */
     int64_t weight_sym = ext->graph.weight_col_sym;
     td_t* props = rel->fwd.props;
     td_t* weight_vec = td_table_get_col(props, weight_sym);
     if (!weight_vec || TD_IS_ERR(weight_vec)) return TD_ERR_PTR(TD_ERR_SCHEMA);
+    if (weight_vec->type != TD_F64) return TD_ERR_PTR(TD_ERR_SCHEMA);
     double* weights = (double*)td_data(weight_vec);
 
     /* Allocate working arrays.
