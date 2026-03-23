@@ -1251,6 +1251,23 @@ td_op_t* td_degree_cent(td_graph_t* g, td_rel_t* rel) {
     return &g->nodes[ext->base.id];
 }
 
+td_op_t* td_topsort(td_graph_t* g, td_rel_t* rel) {
+    if (!g || !rel) return NULL;
+
+    td_op_ext_t* ext = graph_alloc_ext_node(g);
+    if (!ext) return NULL;
+
+    ext->base.opcode   = OP_TOPSORT;
+    ext->base.arity    = 0;
+    ext->base.out_type = TD_TABLE;
+    ext->base.est_rows = (uint32_t)rel->fwd.n_nodes;
+    ext->graph.rel     = rel;
+    ext->graph.direction = 0;
+
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}
+
 td_op_t* td_wco_join(td_graph_t* g,
                       td_rel_t** rels, uint8_t n_rels,
                       uint8_t n_vars) {

@@ -2059,6 +2059,100 @@ static MunitResult test_degree_cent(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+/* DAG: 0→1, 0→2, 1→3, 2→3 (4 nodes, 4 edges, no cycles) */
+static td_t* make_dag_edge_table(void) {
+    int64_t src_data[] = {0, 0, 1, 2};
+    int64_t dst_data[] = {1, 2, 3, 3};
+    int64_t n = 4;
+
+    td_t* src_vec = td_vec_from_raw(TD_I64, src_data, n);
+    td_t* dst_vec = td_vec_from_raw(TD_I64, dst_data, n);
+
+    int64_t src_sym = td_sym_intern("src", 3);
+    int64_t dst_sym = td_sym_intern("dst", 3);
+
+    td_t* tbl = td_table_new(2);
+    tbl = td_table_add_col(tbl, src_sym, src_vec);
+    td_release(src_vec);
+    tbl = td_table_add_col(tbl, dst_sym, dst_vec);
+    td_release(dst_vec);
+    return tbl;
+}
+
+static MunitResult test_topsort(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    td_t* edges = make_dag_edge_table();
+    td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
+
+    td_t* tbl = td_table_new(1);
+    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6),
+                           td_vec_from_raw(TD_I64, (int64_t[]){0}, 1));
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* ts = td_topsort(g, rel);
+    munit_assert_ptr_not_null(ts);
+
+    td_t* result = td_execute(g, ts);
+    munit_assert_ptr_not_null(result);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(td_table_nrows(result), ==, 4);
+
+    /* DAG: 0→1, 0→2, 1→3, 2→3
+     * Valid orderings: 0 must come before 1,2; 1,2 before 3 */
+    int64_t order_sym = td_sym_intern("_order", 6);
+    td_t* order_col = td_table_get_col(result, order_sym);
+    munit_assert_ptr_not_null(order_col);
+    int64_t* ord = (int64_t*)td_data(order_col);
+
+    /* Node 0 must have lowest order */
+    munit_assert_true(ord[0] < ord[1]);
+    munit_assert_true(ord[0] < ord[2]);
+    /* Node 3 must have highest order */
+    munit_assert_true(ord[3] > ord[1]);
+    munit_assert_true(ord[3] > ord[2]);
+
+    td_release(result);
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+static MunitResult test_topsort_cycle(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    /* Cyclic graph: 0→1, 0→2, 1→2, 1→3, 2→3, 3→0 */
+    td_t* edges = make_edge_table();
+    td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
+
+    td_t* tbl = td_table_new(1);
+    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6),
+                           td_vec_from_raw(TD_I64, (int64_t[]){0}, 1));
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* ts = td_topsort(g, rel);
+    td_t* result = td_execute(g, ts);
+
+    /* Cycle detected — should return error */
+    munit_assert_true(TD_IS_ERR(result));
+
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* --------------------------------------------------------------------------
  * Suite definition
  * -------------------------------------------------------------------------- */
@@ -2107,6 +2201,8 @@ static MunitTest csr_tests[] = {
     { "/wco_empty",        test_wco_empty_result,      NULL, NULL, 0, NULL },
     { "/var_bad_range",    test_var_expand_bad_range,   NULL, NULL, 0, NULL },
     { "/degree_cent",     test_degree_cent,            NULL, NULL, 0, NULL },
+    { "/topsort",         test_topsort,                NULL, NULL, 0, NULL },
+    { "/topsort_cycle",   test_topsort_cycle,          NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },  /* terminator */
 };
 

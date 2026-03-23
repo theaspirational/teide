@@ -13616,6 +13616,99 @@ static td_t* exec_degree_cent(td_graph_t* g, td_op_t* op) {
 }
 
 /* --------------------------------------------------------------------------
+ * exec_topsort: topological sort via Kahn's algorithm. O(n+m).
+ * Returns error if graph contains a cycle.
+ * -------------------------------------------------------------------------- */
+static td_t* exec_topsort(td_graph_t* g, td_op_t* op) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+
+    td_rel_t* rel = (td_rel_t*)ext->graph.rel;
+    if (!rel) return TD_ERR_PTR(TD_ERR_SCHEMA);
+
+    int64_t n = rel->fwd.n_nodes;
+    if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
+
+    int64_t* fwd_off = (int64_t*)td_data(rel->fwd.offsets);
+    int64_t* fwd_tgt = (int64_t*)td_data(rel->fwd.targets);
+    int64_t* rev_off = (int64_t*)td_data(rel->rev.offsets);
+
+    td_scratch_arena_t arena;
+    td_scratch_arena_init(&arena);
+
+    int64_t* in_deg = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    int64_t* queue  = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    int64_t* order  = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    if (!in_deg || !queue || !order) {
+        td_scratch_arena_reset(&arena);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    /* Compute in-degrees from reverse CSR */
+    for (int64_t i = 0; i < n; i++)
+        in_deg[i] = rev_off[i + 1] - rev_off[i];
+
+    /* Enqueue zero-degree nodes */
+    int64_t head = 0, tail = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (in_deg[i] == 0) queue[tail++] = i;
+    }
+
+    /* BFS — decrement in-degrees, enqueue new zeros */
+    int64_t count = 0;
+    while (head < tail) {
+        int64_t v = queue[head++];
+        order[v] = count++;
+
+        int64_t start = fwd_off[v];
+        int64_t end   = fwd_off[v + 1];
+        for (int64_t j = start; j < end; j++) {
+            int64_t u = fwd_tgt[j];
+            if (--in_deg[u] == 0) queue[tail++] = u;
+        }
+    }
+
+    /* Cycle detection: not all nodes processed */
+    if (count < n) {
+        td_scratch_arena_reset(&arena);
+        return TD_ERR_PTR(TD_ERR_SCHEMA);  /* cycle detected */
+    }
+
+    /* Build result */
+    td_t* node_vec  = td_vec_new(TD_I64, n);
+    td_t* order_vec = td_vec_new(TD_I64, n);
+    if (!node_vec || TD_IS_ERR(node_vec) || !order_vec || TD_IS_ERR(order_vec)) {
+        td_scratch_arena_reset(&arena);
+        if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
+        if (order_vec && !TD_IS_ERR(order_vec)) td_release(order_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    int64_t* ndata = (int64_t*)td_data(node_vec);
+    int64_t* odata = (int64_t*)td_data(order_vec);
+    for (int64_t i = 0; i < n; i++) {
+        ndata[i] = i;
+        odata[i] = order[i];
+    }
+    node_vec->len  = n;
+    order_vec->len = n;
+
+    td_scratch_arena_reset(&arena);
+
+    td_t* result = td_table_new(2);
+    if (!result || TD_IS_ERR(result)) {
+        td_release(node_vec); td_release(order_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_release(node_vec);
+    result = td_table_add_col(result, td_sym_intern("_order", 6), order_vec);
+    td_release(order_vec);
+
+    return result;
+}
+
+/* --------------------------------------------------------------------------
  * exec_cosine_sim: cosine similarity between embedding column and query vector.
  * dot(a,b) / (||a|| * ||b||) per row.
  * Input: TD_F32 embedding column (flat N*D floats)
@@ -14636,6 +14729,10 @@ static td_t* exec_node(td_graph_t* g, td_op_t* op) {
 
         case OP_DEGREE_CENT: {
             return exec_degree_cent(g, op);
+        }
+
+        case OP_TOPSORT: {
+            return exec_topsort(g, op);
         }
 
         case OP_COSINE_SIM: {

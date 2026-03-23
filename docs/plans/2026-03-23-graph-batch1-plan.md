@@ -260,7 +260,7 @@ git commit -m "feat: degree centrality — in/out/total degree from CSR offsets"
 
 ---
 
-### Task 3: Topological sort — DAG constructor + executor + test
+### Task 3: Topological sort — DAG constructor + executor + test [x]
 
 **Files:**
 - Modify: `src/ops/graph.c`
