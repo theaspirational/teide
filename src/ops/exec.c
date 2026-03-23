@@ -14648,6 +14648,9 @@ typedef struct { double w; int64_t src; int64_t dst; } mst_edge_t;
 static int mst_edge_cmp(const void* a, const void* b) {
     double da = ((const mst_edge_t*)a)->w;
     double db = ((const mst_edge_t*)b)->w;
+    /* Sort NaN to end to maintain strict weak ordering for qsort */
+    if (da != da) return (db != db) ? 0 : 1;
+    if (db != db) return -1;
     return (da > db) - (da < db);
 }
 
