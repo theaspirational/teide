@@ -726,7 +726,8 @@ static bool csv_intern_strings(csv_strref_t** str_refs, int n_cols,
 
         /* Pre-grow: upper bound is n_rows unique strings */
         uint32_t current = td_sym_count();
-        td_sym_ensure_cap(current + (uint32_t)(n_rows < UINT32_MAX ? n_rows : UINT32_MAX));
+        if (!td_sym_ensure_cap(current + (uint32_t)(n_rows < UINT32_MAX ? n_rows : UINT32_MAX)))
+            return false;  /* OOM: cannot grow sym table */
 
         for (int64_t r = 0; r < n_rows; r++) {
             if (nm && (nm[r >> 3] & (1u << (r & 7)))) {

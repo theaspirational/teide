@@ -1192,6 +1192,7 @@ typedef struct {
     const td_expr_t* expr;
     void*  out_data;
     int8_t out_type;
+    _Atomic(int) oom_flag;  /* set to 1 if any worker hits OOM */
 } expr_full_ctx_t;
 
 static void expr_full_fn(void* ctx, uint32_t worker_id, int64_t start, int64_t end) {
@@ -1204,7 +1205,10 @@ static void expr_full_fn(void* ctx, uint32_t worker_id, int64_t start, int64_t e
     td_t* scratch_hdr = NULL;
     char* scratch_mem = (char*)scratch_alloc(&scratch_hdr,
                             (size_t)EXPR_MAX_REGS * EXPR_MORSEL * 8);
-    if (!scratch_mem) return;
+    if (!scratch_mem) {
+        atomic_store_explicit(&c->oom_flag, 1, memory_order_relaxed);
+        return;
+    }
     void* scratch[EXPR_MAX_REGS];
     for (uint8_t r = 0; r < expr->n_regs; r++)
         scratch[r] = scratch_mem + (size_t)r * EXPR_MORSEL * 8;
@@ -1261,11 +1265,17 @@ static td_t* expr_eval_full_parted(const td_expr_t* expr, int64_t nrows) {
             .expr = &seg_expr,
             .out_data = (char*)td_data(out) + global_off * esz,
             .out_type = expr->out_type,
+            .oom_flag = 0,
         };
         if (pool && seg_len >= TD_PARALLEL_THRESHOLD)
             td_pool_dispatch(pool, expr_full_fn, &ctx, seg_len);
         else
             expr_full_fn(&ctx, 0, 0, seg_len);
+
+        if (atomic_load_explicit(&ctx.oom_flag, memory_order_acquire)) {
+            td_release(out);
+            return TD_ERR_PTR(TD_ERR_OOM);
+        }
 
         global_off += seg_len;
     }
@@ -1284,6 +1294,7 @@ static td_t* expr_eval_full(const td_expr_t* expr, int64_t nrows) {
 
     expr_full_ctx_t ctx = {
         .expr = expr, .out_data = td_data(out), .out_type = expr->out_type,
+        .oom_flag = 0,
     };
 
     td_pool_t* pool = td_pool_get();
@@ -1292,6 +1303,10 @@ static td_t* expr_eval_full(const td_expr_t* expr, int64_t nrows) {
     else
         expr_full_fn(&ctx, 0, 0, nrows);
 
+    if (atomic_load_explicit(&ctx.oom_flag, memory_order_acquire)) {
+        td_release(out);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
     return out;
 }
 
@@ -2234,7 +2249,7 @@ static td_t* exec_filter_seq(td_t* input, td_t* pred, int64_t ncols,
     if (!tbl || TD_IS_ERR(tbl)) return tbl;
     for (int64_t c = 0; c < ncols; c++) {
         td_t* col = td_table_get_col_idx(input, c);
-        if (!col || TD_IS_ERR(col)) continue;
+        if (!col || TD_IS_ERR(col)) { td_release(tbl); return TD_ERR_PTR(TD_ERR_CORRUPT); }
         int64_t name_id = td_table_col_name(input, c);
         if (col->type == TD_MAPCOMMON) {
             td_t* mc_filt = materialize_mapcommon_filter(col, pred, pass_count);

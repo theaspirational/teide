@@ -192,6 +192,7 @@ td_rel_t* td_rel_from_edges(td_t* edge_table,
 
     int64_t src_sym = td_sym_intern(src_col, strlen(src_col));
     int64_t dst_sym = td_sym_intern(dst_col, strlen(dst_col));
+    if (src_sym < 0 || dst_sym < 0) return NULL;  /* sym intern OOM */
 
     td_t* src_vec = td_table_get_col(edge_table, src_sym);
     td_t* dst_vec = td_table_get_col(edge_table, dst_sym);
