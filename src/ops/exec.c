@@ -14481,6 +14481,10 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
         }
     }
 
+    /* Undirected normalization: BFS from each source counts every unordered
+     * pair {s,t} twice (once as source=s, once as source=t), so halve. */
+    for (int64_t i = 0; i < n; i++) cb[i] /= 2.0;
+
     /* Normalize if sampled */
     if (sample > 0 && (int64_t)sample < n) {
         double scale = (double)n / (double)sample;

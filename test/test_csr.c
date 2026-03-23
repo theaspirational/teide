@@ -2610,19 +2610,13 @@ static MunitResult test_betweenness(const void* params, void* data) {
     munit_assert_ptr_not_null(cent_col);
     double* cents = (double*)td_data(cent_col);
 
-    /* All centrality values should be >= 0 */
+    /* Undirected K_{2,2} (0-1, 0-2, 1-3, 2-3): each node is the sole
+     * intermediary for exactly one pair (e.g., node 0 mediates {1,2} via
+     * 1-0-2, but sigma_{1,2}=2 since 1-3-2 also exists), giving C_B = 0.5.
+     * By symmetry all four nodes have equal betweenness. */
     for (int i = 0; i < 4; i++) {
-        munit_assert_double(cents[i], >=, 0.0);
-    }
-
-    /* Undirected DAG: 0-1, 0-2, 1-3, 2-3 forms K_{2,2} (complete bipartite).
-     * By symmetry, all nodes have equal betweenness centrality.
-     * Each node lies on shortest paths between the other pair in its partition
-     * and the opposite partition, yielding equal values. */
-    munit_assert_double(cents[0], >, 0.0);
-    for (int i = 1; i < 4; i++) {
-        munit_assert_double(cents[i] - cents[0], >=, -1e-9);
-        munit_assert_double(cents[i] - cents[0], <=, 1e-9);
+        munit_assert_double(cents[i] - 0.5, >=, -1e-9);
+        munit_assert_double(cents[i] - 0.5, <=, 1e-9);
     }
 
     td_release(result);
