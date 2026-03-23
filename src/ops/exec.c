@@ -1506,7 +1506,9 @@ static void binary_range(td_op_t* op, int8_t out_type,
     int32_t* lp_i32 = NULL; uint32_t* lp_u32 = NULL; int16_t* lp_i16 = NULL;
     int32_t* rp_i32 = NULL; uint32_t* rp_u32 = NULL; int16_t* rp_i16 = NULL;
 
-    int64_t lsym_buf[n], rsym_buf[n]; /* stack VLA for narrow TD_SYM (n<=1024) */
+    /* scratch_alloc replaces VLA for narrow TD_SYM buffers (safe on parallel path) */
+    td_t* lsym_hdr = NULL; int64_t* lsym_buf = NULL;
+    td_t* rsym_hdr = NULL; int64_t* rsym_buf = NULL;
     if (!l_scalar) {
         void* lbase = (char*)td_data(lhs) + start * td_sym_elem_size(lhs->type, lhs->attrs);
         if (lhs->type == TD_F64) lp_f64 = (double*)lbase;
@@ -1515,7 +1517,13 @@ static void binary_range(td_op_t* op, int8_t out_type,
             uint8_t w = lhs->attrs & TD_SYM_W_MASK;
             if (w == TD_SYM_W64) lp_i64 = (int64_t*)lbase;
             else if (w == TD_SYM_W32) lp_u32 = (uint32_t*)lbase;
-            else { for (int64_t j = 0; j < n; j++) lsym_buf[j] = td_read_sym(td_data(lhs), start+j, lhs->type, lhs->attrs); lp_i64 = lsym_buf; }
+            else {
+                lsym_buf = (int64_t*)scratch_alloc(&lsym_hdr, (size_t)n * sizeof(int64_t));
+                if (lsym_buf) {
+                    for (int64_t j = 0; j < n; j++) lsym_buf[j] = td_read_sym(td_data(lhs), start+j, lhs->type, lhs->attrs);
+                    lp_i64 = lsym_buf;
+                }
+            }
         }
         else if (lhs->type == TD_I32 || lhs->type == TD_DATE || lhs->type == TD_TIME) lp_i32 = (int32_t*)lbase;
         else if (lhs->type == TD_I16) lp_i16 = (int16_t*)lbase;
@@ -1529,7 +1537,13 @@ static void binary_range(td_op_t* op, int8_t out_type,
             uint8_t w = rhs->attrs & TD_SYM_W_MASK;
             if (w == TD_SYM_W64) rp_i64 = (int64_t*)rbase;
             else if (w == TD_SYM_W32) rp_u32 = (uint32_t*)rbase;
-            else { for (int64_t j = 0; j < n; j++) rsym_buf[j] = td_read_sym(td_data(rhs), start+j, rhs->type, rhs->attrs); rp_i64 = rsym_buf; }
+            else {
+                rsym_buf = (int64_t*)scratch_alloc(&rsym_hdr, (size_t)n * sizeof(int64_t));
+                if (rsym_buf) {
+                    for (int64_t j = 0; j < n; j++) rsym_buf[j] = td_read_sym(td_data(rhs), start+j, rhs->type, rhs->attrs);
+                    rp_i64 = rsym_buf;
+                }
+            }
         }
         else if (rhs->type == TD_I32 || rhs->type == TD_DATE || rhs->type == TD_TIME) rp_i32 = (int32_t*)rbase;
         else if (rhs->type == TD_I16) rp_i16 = (int16_t*)rbase;
@@ -1600,6 +1614,9 @@ static void binary_range(td_op_t* op, int8_t out_type,
             ((uint8_t*)dst)[i] = r;
         }
     }
+
+    scratch_free(lsym_hdr);
+    scratch_free(rsym_hdr);
 }
 
 /* Context for parallel binary dispatch */
