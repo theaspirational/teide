@@ -2316,14 +2316,21 @@ static MunitResult test_cluster_coeff(const void* params, void* data) {
     munit_assert_false(TD_IS_ERR(result));
     munit_assert_int(td_table_nrows(result), ==, 4);
 
-    /* All coefficients should be between 0.0 and 1.0 */
+    /* Verify exact clustering coefficients.
+     * Graph edges: 0->1, 0->2, 1->2, 1->3, 2->3, 3->0 (directed).
+     * Undirected neighbors: 0={1,2,3}, 1={0,2,3}, 2={0,1,3}, 3={0,1,2}.
+     * Formula: directed_fwd_edges_between_neighbors / (deg * (deg-1)).
+     * Node 0 (deg=3, pairs=6): fwd edges among {1,2,3}: 1->2,1->3,2->3 = 3; coeff=3/6=0.5
+     * Node 1 (deg=3, pairs=6): fwd edges among {0,2,3}: 0->2,2->3,3->0 = 3; coeff=3/6=0.5
+     * Node 2 (deg=3, pairs=6): fwd edges among {0,1,3}: 0->1,1->3,3->0 = 3; coeff=3/6=0.5
+     * Node 3 (deg=3, pairs=6): fwd edges among {0,1,2}: 0->1,0->2,1->2 = 3; coeff=3/6=0.5 */
     int64_t coeff_sym = td_sym_intern("_coefficient", 12);
     td_t* coeff_col = td_table_get_col(result, coeff_sym);
     munit_assert_ptr_not_null(coeff_col);
     double* coeffs = (double*)td_data(coeff_col);
     for (int i = 0; i < 4; i++) {
-        munit_assert_double(coeffs[i], >=, 0.0);
-        munit_assert_double(coeffs[i], <=, 1.0);
+        munit_assert_double(coeffs[i], >=, 0.49);
+        munit_assert_double(coeffs[i], <=, 0.51);
     }
 
     td_release(result);
@@ -2371,10 +2378,24 @@ static MunitResult test_random_walk(const void* params, void* data) {
     int64_t* nodes = (int64_t*)td_data(node_col);
     munit_assert_int(nodes[0], ==, 0);
 
-    /* All nodes should be valid (0..3) */
+    /* All nodes should be valid (0..3) and consecutive pairs must be edges.
+     * Graph edges: 0->1, 0->2, 1->2, 1->3, 2->3, 3->0 */
+    int edges_src[] = {0, 0, 1, 1, 2, 3};
+    int edges_dst[] = {1, 2, 2, 3, 3, 0};
+    int n_edges = 6;
     for (int i = 0; i < 11; i++) {
         munit_assert(nodes[i] >= 0);
         munit_assert(nodes[i] < 4);
+        if (i > 0) {
+            bool valid_edge = false;
+            for (int e = 0; e < n_edges; e++) {
+                if (edges_src[e] == nodes[i-1] && edges_dst[e] == nodes[i]) {
+                    valid_edge = true;
+                    break;
+                }
+            }
+            munit_assert_true(valid_edge);
+        }
     }
 
     /* Step column should be 0..10 */

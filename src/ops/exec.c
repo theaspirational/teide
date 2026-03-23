@@ -13403,6 +13403,7 @@ static td_t* exec_astar(td_graph_t* g, td_op_t* op,
     dist[src_id] = 0.0;
 
     /* A* uses f = g + h; heap stores f-cost for priority ordering */
+    uint8_t max_depth = ext->graph.max_depth;
     double dx = lat[src_id] - lat[dst_id];
     double dy = lon[src_id] - lon[dst_id];
     double h0 = sqrt(dx * dx + dy * dy);
@@ -13420,6 +13421,7 @@ static td_t* exec_astar(td_graph_t* g, td_op_t* op,
         visited[u] = true;
 
         if (u == dst_id) break;
+        if (depth[u] >= max_depth) continue;  /* enforce depth limit */
 
         for (int64_t j = fwd_off[u]; j < fwd_off[u + 1]; j++) {
             int64_t v = fwd_tgt[j];
@@ -14245,9 +14247,10 @@ static td_t* exec_cluster_coeff(td_graph_t* g, td_op_t* op) {
     int64_t* ndata = (int64_t*)td_data(node_vec);
     double*  cdata = (double*)td_data(coeff_vec);
 
+    memset(nbr_set, 0, (size_t)n);
+
     for (int64_t v = 0; v < n; v++) {
         ndata[v] = v;
-        memset(nbr_set, 0, (size_t)n);
 
         /* Build undirected neighbor set for v */
         int64_t deg = 0;
@@ -14260,7 +14263,11 @@ static td_t* exec_cluster_coeff(td_graph_t* g, td_op_t* op) {
             if (u != v && !nbr_set[u]) { nbr_set[u] = 1; nbrs[deg++] = u; }
         }
 
-        if (deg < 2) { cdata[v] = 0.0; continue; }
+        if (deg < 2) {
+            cdata[v] = 0.0;
+            for (int64_t a = 0; a < deg; a++) nbr_set[nbrs[a]] = 0;
+            continue;
+        }
 
         /* Count directed fwd edges between neighbors of v */
         int64_t triangles = 0;
@@ -14268,10 +14275,13 @@ static td_t* exec_cluster_coeff(td_graph_t* g, td_op_t* op) {
             int64_t u = nbrs[a];
             /* Check fwd edges of u against neighbor set */
             for (int64_t j = fwd_off[u]; j < fwd_off[u+1]; j++) {
-                if (nbr_set[fwd_tgt[j]] && fwd_tgt[j] != v) triangles++;
+                if (nbr_set[fwd_tgt[j]] && fwd_tgt[j] != v && fwd_tgt[j] != u) triangles++;
             }
         }
         cdata[v] = (double)triangles / (double)(deg * (deg - 1));
+
+        /* Clear only entries we set (O(deg) instead of O(n)) */
+        for (int64_t a = 0; a < deg; a++) nbr_set[nbrs[a]] = 0;
     }
 
     node_vec->len  = n;
@@ -14328,7 +14338,6 @@ static td_t* exec_random_walk(td_graph_t* g, td_op_t* op, td_t* src_val) {
 
     /* xorshift64 PRNG seeded from source node */
     uint64_t rng = (uint64_t)start_node * 6364136223846793005ULL + 1442695040888963407ULL;
-    if (rng == 0) rng = 1;
 
     int64_t current = start_node;
     int64_t count = 0;
