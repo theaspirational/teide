@@ -2290,6 +2290,53 @@ static MunitResult test_dfs_max_depth(const void* params, void* data) {
 }
 
 /* --------------------------------------------------------------------------
+ * test_cluster_coeff: clustering coefficient via triangle counting
+ * -------------------------------------------------------------------------- */
+static MunitResult test_cluster_coeff(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    /* Graph: 0→1, 0→2, 1→2, 1→3, 2→3, 3→0
+     * Treat as undirected: node 0 neighbors={1,2,3}, node 1 neighbors={0,2,3}, etc.
+     * All 4 nodes form a near-clique. */
+    td_t* edges = make_edge_table();
+    td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
+
+    td_t* tbl = td_table_new(1);
+    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6),
+                           td_vec_from_raw(TD_I64, (int64_t[]){0}, 1));
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* cc = td_cluster_coeff(g, rel);
+    munit_assert_ptr_not_null(cc);
+
+    td_t* result = td_execute(g, cc);
+    munit_assert_ptr_not_null(result);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(td_table_nrows(result), ==, 4);
+
+    /* All coefficients should be between 0.0 and 1.0 */
+    int64_t coeff_sym = td_sym_intern("_coefficient", 12);
+    td_t* coeff_col = td_table_get_col(result, coeff_sym);
+    munit_assert_ptr_not_null(coeff_col);
+    double* coeffs = (double*)td_data(coeff_col);
+    for (int i = 0; i < 4; i++) {
+        munit_assert_double(coeffs[i], >=, 0.0);
+        munit_assert_double(coeffs[i], <=, 1.0);
+    }
+
+    td_release(result);
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* --------------------------------------------------------------------------
  * Suite definition
  * -------------------------------------------------------------------------- */
 
@@ -2341,6 +2388,7 @@ static MunitTest csr_tests[] = {
     { "/topsort_cycle",   test_topsort_cycle,          NULL, NULL, 0, NULL },
     { "/dfs",             test_dfs,                    NULL, NULL, 0, NULL },
     { "/dfs_max_depth",   test_dfs_max_depth,          NULL, NULL, 0, NULL },
+    { "/cluster_coeff",  test_cluster_coeff,          NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },  /* terminator */
 };
 

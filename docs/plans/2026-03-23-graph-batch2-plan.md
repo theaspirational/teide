@@ -75,9 +75,9 @@ git commit -m "feat: add opcodes and declarations for A*, k-shortest, clustering
 
 ### Task 2: Clustering coefficients — C kernel + test
 
-- [ ] Write failing test
-- [ ] Implement DAG constructor and executor kernel
-- [ ] Tests pass
+- [x] Write failing test
+- [x] Implement DAG constructor and executor kernel
+- [x] Tests pass
 
 Simplest of the batch — no inputs, no edge weights. Triangle counting via neighbor set intersection.
 

@@ -13709,6 +13709,102 @@ static td_t* exec_topsort(td_graph_t* g, td_op_t* op) {
 }
 
 /* --------------------------------------------------------------------------
+ * exec_cluster_coeff: clustering coefficient via triangle counting. O(n*d^2).
+ * For each node v, count triangles among undirected neighbors using bitset.
+ * -------------------------------------------------------------------------- */
+static td_t* exec_cluster_coeff(td_graph_t* g, td_op_t* op) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+    td_rel_t* rel = (td_rel_t*)ext->graph.rel;
+    if (!rel) return TD_ERR_PTR(TD_ERR_SCHEMA);
+
+    int64_t n = rel->fwd.n_nodes;
+    if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
+
+    int64_t* fwd_off = (int64_t*)td_data(rel->fwd.offsets);
+    int64_t* fwd_tgt = (int64_t*)td_data(rel->fwd.targets);
+    int64_t* rev_off = (int64_t*)td_data(rel->rev.offsets);
+    int64_t* rev_tgt = (int64_t*)td_data(rel->rev.targets);
+
+    td_scratch_arena_t arena;
+    td_scratch_arena_init(&arena);
+
+    /* Bitset for O(1) neighbor lookup: one byte per node */
+    uint8_t* nbr_set = (uint8_t*)td_scratch_arena_push(&arena, (size_t)n);
+    /* Merged neighbor list (max degree = fwd+rev) */
+    int64_t max_deg = 0;
+    for (int64_t i = 0; i < n; i++) {
+        int64_t d = (fwd_off[i+1]-fwd_off[i]) + (rev_off[i+1]-rev_off[i]);
+        if (d > max_deg) max_deg = d;
+    }
+    int64_t* nbrs = (int64_t*)td_scratch_arena_push(&arena, (size_t)max_deg * sizeof(int64_t));
+    if (!nbr_set || !nbrs) {
+        td_scratch_arena_reset(&arena);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    td_t* node_vec  = td_vec_new(TD_I64, n);
+    td_t* coeff_vec = td_vec_new(TD_F64, n);
+    if (!node_vec || TD_IS_ERR(node_vec) || !coeff_vec || TD_IS_ERR(coeff_vec)) {
+        td_scratch_arena_reset(&arena);
+        if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
+        if (coeff_vec && !TD_IS_ERR(coeff_vec)) td_release(coeff_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    int64_t* ndata = (int64_t*)td_data(node_vec);
+    double*  cdata = (double*)td_data(coeff_vec);
+
+    for (int64_t v = 0; v < n; v++) {
+        ndata[v] = v;
+        memset(nbr_set, 0, (size_t)n);
+
+        /* Build undirected neighbor set for v */
+        int64_t deg = 0;
+        for (int64_t j = fwd_off[v]; j < fwd_off[v+1]; j++) {
+            int64_t u = fwd_tgt[j];
+            if (u != v && !nbr_set[u]) { nbr_set[u] = 1; nbrs[deg++] = u; }
+        }
+        for (int64_t j = rev_off[v]; j < rev_off[v+1]; j++) {
+            int64_t u = rev_tgt[j];
+            if (u != v && !nbr_set[u]) { nbr_set[u] = 1; nbrs[deg++] = u; }
+        }
+
+        if (deg < 2) { cdata[v] = 0.0; continue; }
+
+        /* Count triangles: for each pair of neighbors, check edge */
+        int64_t triangles = 0;
+        for (int64_t a = 0; a < deg; a++) {
+            int64_t u = nbrs[a];
+            /* Check which of v's other neighbors are also neighbors of u */
+            for (int64_t j = fwd_off[u]; j < fwd_off[u+1]; j++) {
+                if (nbr_set[fwd_tgt[j]] && fwd_tgt[j] != v) triangles++;
+            }
+            for (int64_t j = rev_off[u]; j < rev_off[u+1]; j++) {
+                if (nbr_set[rev_tgt[j]] && rev_tgt[j] != v) triangles++;
+            }
+        }
+        /* Each triangle counted twice (once from each endpoint of the edge) */
+        cdata[v] = (double)triangles / (double)(deg * (deg - 1));
+    }
+
+    node_vec->len  = n;
+    coeff_vec->len = n;
+    td_scratch_arena_reset(&arena);
+
+    td_t* result = td_table_new(2);
+    if (!result || TD_IS_ERR(result)) {
+        td_release(node_vec); td_release(coeff_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_release(node_vec);
+    result = td_table_add_col(result, td_sym_intern("_coefficient", 12), coeff_vec);
+    td_release(coeff_vec);
+    return result;
+}
+
+/* --------------------------------------------------------------------------
  * exec_dfs: depth-first search from source node. O(n+m).
  * -------------------------------------------------------------------------- */
 static td_t* exec_dfs(td_graph_t* g, td_op_t* op, td_t* src_val) {
@@ -14866,6 +14962,10 @@ static td_t* exec_node(td_graph_t* g, td_op_t* op) {
             td_t* result = exec_dfs(g, op, src);
             td_release(src);
             return result;
+        }
+
+        case OP_CLUSTER_COEFF: {
+            return exec_cluster_coeff(g, op);
         }
 
         case OP_COSINE_SIM: {
