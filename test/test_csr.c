@@ -2153,6 +2153,102 @@ static MunitResult test_topsort_cycle(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+static MunitResult test_dfs(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    td_t* edges = make_edge_table();
+    td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
+
+    /* Build a table with source node = 0 */
+    td_t* src_tbl = td_table_new(1);
+    td_t* src_vec = td_vec_from_raw(TD_I64, (int64_t[]){0}, 1);
+    src_tbl = td_table_add_col(src_tbl, td_sym_intern("src", 3), src_vec);
+    td_release(src_vec);
+
+    td_graph_t* g = td_graph_new(src_tbl);
+    td_op_t* src_op = td_scan(g, "src");
+    td_op_t* dfs = td_dfs(g, src_op, rel, 255);
+    munit_assert_ptr_not_null(dfs);
+
+    td_t* result = td_execute(g, dfs);
+    munit_assert_ptr_not_null(result);
+    munit_assert_false(TD_IS_ERR(result));
+
+    /* All 4 nodes should be reachable from node 0 */
+    munit_assert_int(td_table_nrows(result), ==, 4);
+
+    /* Node 0 should have depth 0 and parent -1 */
+    int64_t node_sym   = td_sym_intern("_node", 5);
+    int64_t depth_sym  = td_sym_intern("_depth", 6);
+    int64_t parent_sym = td_sym_intern("_parent", 7);
+
+    td_t* node_col   = td_table_get_col(result, node_sym);
+    td_t* depth_col  = td_table_get_col(result, depth_sym);
+    td_t* parent_col = td_table_get_col(result, parent_sym);
+    munit_assert_ptr_not_null(node_col);
+    munit_assert_ptr_not_null(depth_col);
+    munit_assert_ptr_not_null(parent_col);
+
+    int64_t* nodes   = (int64_t*)td_data(node_col);
+    int64_t* depths  = (int64_t*)td_data(depth_col);
+    int64_t* parents = (int64_t*)td_data(parent_col);
+
+    /* First node in DFS order should be source (node 0) */
+    munit_assert_int(nodes[0], ==, 0);
+    munit_assert_int(depths[0], ==, 0);
+    munit_assert_int(parents[0], ==, -1);
+
+    /* All depths should be >= 0 */
+    for (int64_t i = 0; i < 4; i++) {
+        munit_assert_int(depths[i], >=, 0);
+    }
+
+    td_release(result);
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(src_tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+static MunitResult test_dfs_max_depth(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    td_t* edges = make_dag_edge_table();  /* 0→1, 0→2, 1→3, 2→3 */
+    td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
+
+    td_t* src_tbl = td_table_new(1);
+    td_t* src_vec = td_vec_from_raw(TD_I64, (int64_t[]){0}, 1);
+    src_tbl = td_table_add_col(src_tbl, td_sym_intern("src", 3), src_vec);
+    td_release(src_vec);
+
+    td_graph_t* g = td_graph_new(src_tbl);
+    td_op_t* src_op = td_scan(g, "src");
+    td_op_t* dfs = td_dfs(g, src_op, rel, 1);  /* max depth = 1 */
+
+    td_t* result = td_execute(g, dfs);
+    munit_assert_ptr_not_null(result);
+    munit_assert_false(TD_IS_ERR(result));
+
+    /* With max_depth=1 from node 0: nodes 0, 1, 2 (not 3) */
+    munit_assert_int(td_table_nrows(result), ==, 3);
+
+    td_release(result);
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(src_tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* --------------------------------------------------------------------------
  * Suite definition
  * -------------------------------------------------------------------------- */
@@ -2203,6 +2299,8 @@ static MunitTest csr_tests[] = {
     { "/degree_cent",     test_degree_cent,            NULL, NULL, 0, NULL },
     { "/topsort",         test_topsort,                NULL, NULL, 0, NULL },
     { "/topsort_cycle",   test_topsort_cycle,          NULL, NULL, 0, NULL },
+    { "/dfs",             test_dfs,                    NULL, NULL, 0, NULL },
+    { "/dfs_max_depth",   test_dfs_max_depth,          NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },  /* terminator */
 };
 

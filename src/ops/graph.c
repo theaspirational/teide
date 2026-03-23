@@ -1268,6 +1268,28 @@ td_op_t* td_topsort(td_graph_t* g, td_rel_t* rel) {
     return &g->nodes[ext->base.id];
 }
 
+td_op_t* td_dfs(td_graph_t* g, td_op_t* src, td_rel_t* rel, uint8_t max_depth) {
+    if (!g || !src || !rel) return NULL;
+
+    td_op_ext_t* ext = graph_alloc_ext_node(g);
+    if (!ext) return NULL;
+
+    uint32_t src_id = src->id;
+    src = &g->nodes[src_id];
+
+    ext->base.opcode     = OP_DFS;
+    ext->base.arity      = 1;
+    ext->base.inputs[0]  = src;
+    ext->base.out_type   = TD_TABLE;
+    ext->base.est_rows   = (uint32_t)rel->fwd.n_nodes;
+    ext->graph.rel       = rel;
+    ext->graph.direction = 0;
+    ext->graph.max_depth = max_depth;
+
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}
+
 td_op_t* td_wco_join(td_graph_t* g,
                       td_rel_t** rels, uint8_t n_rels,
                       uint8_t n_vars) {

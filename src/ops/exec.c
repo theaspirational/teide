@@ -13709,6 +13709,127 @@ static td_t* exec_topsort(td_graph_t* g, td_op_t* op) {
 }
 
 /* --------------------------------------------------------------------------
+ * exec_dfs: depth-first search from source node. O(n+m).
+ * -------------------------------------------------------------------------- */
+static td_t* exec_dfs(td_graph_t* g, td_op_t* op, td_t* src_val) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+
+    td_rel_t* rel = (td_rel_t*)ext->graph.rel;
+    if (!rel) return TD_ERR_PTR(TD_ERR_SCHEMA);
+
+    int64_t n = rel->fwd.n_nodes;
+    uint8_t max_depth = ext->graph.max_depth;
+    if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
+
+    /* Get source node ID */
+    int64_t start_node;
+    if (td_is_atom(src_val)) {
+        start_node = src_val->i64;
+    } else {
+        start_node = ((int64_t*)td_data(src_val))[0];
+    }
+    if (start_node < 0 || start_node >= n) return TD_ERR_PTR(TD_ERR_RANGE);
+
+    int64_t* fwd_off = (int64_t*)td_data(rel->fwd.offsets);
+    int64_t* fwd_tgt = (int64_t*)td_data(rel->fwd.targets);
+
+    td_scratch_arena_t arena;
+    td_scratch_arena_init(&arena);
+
+    /* DFS uses paired stack: node + depth */
+    int64_t* stack_node  = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    int64_t* stack_depth = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    uint8_t* visited     = (uint8_t*)td_scratch_arena_push(&arena, (size_t)n);
+    int64_t* res_node    = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    int64_t* res_depth   = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    int64_t* res_parent  = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    int64_t* parent_map  = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    if (!stack_node || !stack_depth || !visited ||
+        !res_node || !res_depth || !res_parent || !parent_map) {
+        td_scratch_arena_reset(&arena);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    memset(visited, 0, (size_t)n);
+    for (int64_t i = 0; i < n; i++) parent_map[i] = -1;
+
+    /* Push source */
+    int64_t sp = 0;
+    stack_node[sp]  = start_node;
+    stack_depth[sp] = 0;
+    sp++;
+
+    int64_t count = 0;
+
+    while (sp > 0) {
+        sp--;
+        int64_t v = stack_node[sp];
+        int64_t d = stack_depth[sp];
+
+        if (visited[v]) continue;
+        visited[v] = 1;
+
+        res_node[count]   = v;
+        res_depth[count]  = d;
+        res_parent[count] = parent_map[v];
+        count++;
+
+        if (d < max_depth) {
+            /* Push neighbors in reverse order so first neighbor is visited first */
+            int64_t start = fwd_off[v];
+            int64_t end   = fwd_off[v + 1];
+            for (int64_t j = end - 1; j >= start; j--) {
+                int64_t u = fwd_tgt[j];
+                if (!visited[u]) {
+                    stack_node[sp]  = u;
+                    stack_depth[sp] = d + 1;
+                    parent_map[u]   = v;
+                    sp++;
+                }
+            }
+        }
+    }
+
+    /* Build result vectors */
+    td_t* node_vec   = td_vec_new(TD_I64, count);
+    td_t* depth_vec  = td_vec_new(TD_I64, count);
+    td_t* parent_vec = td_vec_new(TD_I64, count);
+    if (!node_vec || TD_IS_ERR(node_vec) ||
+        !depth_vec || TD_IS_ERR(depth_vec) ||
+        !parent_vec || TD_IS_ERR(parent_vec)) {
+        td_scratch_arena_reset(&arena);
+        if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
+        if (depth_vec && !TD_IS_ERR(depth_vec)) td_release(depth_vec);
+        if (parent_vec && !TD_IS_ERR(parent_vec)) td_release(parent_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    memcpy(td_data(node_vec),   res_node,   (size_t)count * sizeof(int64_t));
+    memcpy(td_data(depth_vec),  res_depth,  (size_t)count * sizeof(int64_t));
+    memcpy(td_data(parent_vec), res_parent, (size_t)count * sizeof(int64_t));
+    node_vec->len   = count;
+    depth_vec->len  = count;
+    parent_vec->len = count;
+
+    td_scratch_arena_reset(&arena);
+
+    td_t* result = td_table_new(3);
+    if (!result || TD_IS_ERR(result)) {
+        td_release(node_vec); td_release(depth_vec); td_release(parent_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_release(node_vec);
+    result = td_table_add_col(result, td_sym_intern("_depth", 6), depth_vec);
+    td_release(depth_vec);
+    result = td_table_add_col(result, td_sym_intern("_parent", 7), parent_vec);
+    td_release(parent_vec);
+
+    return result;
+}
+
+/* --------------------------------------------------------------------------
  * exec_cosine_sim: cosine similarity between embedding column and query vector.
  * dot(a,b) / (||a|| * ||b||) per row.
  * Input: TD_F32 embedding column (flat N*D floats)
@@ -14733,6 +14854,14 @@ static td_t* exec_node(td_graph_t* g, td_op_t* op) {
 
         case OP_TOPSORT: {
             return exec_topsort(g, op);
+        }
+
+        case OP_DFS: {
+            td_t* src = exec_node(g, op->inputs[0]);
+            if (!src || TD_IS_ERR(src)) return src;
+            td_t* result = exec_dfs(g, op, src);
+            td_release(src);
+            return result;
         }
 
         case OP_COSINE_SIM: {

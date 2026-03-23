@@ -522,7 +522,7 @@ git commit -m "feat: topological sort — Kahn's algorithm with cycle detection"
 
 ---
 
-### Task 4: DFS traversal — DAG constructor + executor + test
+### Task 4: DFS traversal — DAG constructor + executor + test [x]
 
 **Files:**
 - Modify: `src/ops/graph.c`
