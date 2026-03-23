@@ -13379,6 +13379,7 @@ static td_t* exec_astar(td_graph_t* g, td_op_t* op,
     td_t* lat_vec = td_table_get_col(np, ext->graph.coord_col_syms[0]);
     td_t* lon_vec = td_table_get_col(np, ext->graph.coord_col_syms[1]);
     if (!lat_vec || !lon_vec) return TD_ERR_PTR(TD_ERR_SCHEMA);
+    if (lat_vec->len < n || lon_vec->len < n) return TD_ERR_PTR(TD_ERR_RANGE);
     double* lat = (double*)td_data(lat_vec);
     double* lon = (double*)td_data(lon_vec);
 
@@ -13567,10 +13568,17 @@ static td_t* exec_k_shortest(td_graph_t* g, td_op_t* op,
 
     if (d >= 1e308) {
         td_scratch_arena_reset(&arena);
-        td_t* nv = td_vec_new(TD_I64, 0); nv->len = 0;
-        td_t* dv = td_vec_new(TD_F64, 0); dv->len = 0;
-        td_t* pv = td_vec_new(TD_I64, 0); pv->len = 0;
+        td_t* nv = td_vec_new(TD_I64, 0);
+        td_t* dv = td_vec_new(TD_F64, 0);
+        td_t* pv = td_vec_new(TD_I64, 0);
         td_t* result = td_table_new(3);
+        if (!nv || !dv || !pv || !result) {
+            if (nv) td_release(nv);
+            if (dv) td_release(dv);
+            if (pv) td_release(pv);
+            if (result) td_release(result);
+            return TD_ERR_PTR(TD_ERR_OOM);
+        }
         result = td_table_add_col(result, td_sym_intern("_path_id", 8), pv); td_release(pv);
         result = td_table_add_col(result, td_sym_intern("_node", 5), nv); td_release(nv);
         result = td_table_add_col(result, td_sym_intern("_dist", 5), dv); td_release(dv);
@@ -14338,6 +14346,7 @@ static td_t* exec_random_walk(td_graph_t* g, td_op_t* op, td_t* src_val) {
 
     /* xorshift64 PRNG seeded from source node */
     uint64_t rng = (uint64_t)start_node * 6364136223846793005ULL + 1442695040888963407ULL;
+    if (rng == 0) rng = 1;
 
     int64_t current = start_node;
     int64_t count = 0;

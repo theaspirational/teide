@@ -1198,11 +1198,15 @@ td_op_t* td_dijkstra(td_graph_t* g, td_op_t* src, td_op_t* dst,
                       uint8_t max_depth) {
     if (!g || !src || !rel || !weight_col) return NULL;
 
+    /* Save IDs before alloc — realloc may invalidate the pointers */
+    uint32_t src_id = src->id;
+    uint32_t dst_id = dst ? dst->id : 0;
+
     td_op_ext_t* ext = graph_alloc_ext_node(g);
     if (!ext) return NULL;
 
-    src = &g->nodes[src->id];
-    if (dst) dst = &g->nodes[dst->id];
+    src = &g->nodes[src_id];
+    if (dst) dst = &g->nodes[dst_id];
 
     ext->base.opcode    = OP_DIJKSTRA;
     ext->base.arity     = dst ? 2 : 1;
@@ -1422,11 +1426,15 @@ td_op_t* td_astar(td_graph_t* g, td_op_t* src, td_op_t* dst,
     if (!g || !src || !dst || !rel || !weight_col || !lat_col || !lon_col || !node_props)
         return NULL;
 
+    /* Save IDs before alloc — realloc may invalidate the pointers */
+    uint32_t src_id = src->id;
+    uint32_t dst_id = dst->id;
+
     td_op_ext_t* ext = graph_alloc_ext_node(g);
     if (!ext) return NULL;
 
-    src = &g->nodes[src->id];
-    dst = &g->nodes[dst->id];
+    src = &g->nodes[src_id];
+    dst = &g->nodes[dst_id];
 
     ext->base.opcode    = OP_ASTAR;
     ext->base.arity     = 2;
@@ -1451,11 +1459,15 @@ td_op_t* td_k_shortest(td_graph_t* g, td_op_t* src, td_op_t* dst,
                        td_rel_t* rel, const char* weight_col, uint16_t k) {
     if (!g || !src || !dst || !rel || !weight_col || k == 0) return NULL;
 
+    /* Save IDs before alloc — realloc may invalidate the pointers */
+    uint32_t src_id = src->id;
+    uint32_t dst_id = dst->id;
+
     td_op_ext_t* ext = graph_alloc_ext_node(g);
     if (!ext) return NULL;
 
-    src = &g->nodes[src->id];
-    dst = &g->nodes[dst->id];
+    src = &g->nodes[src_id];
+    dst = &g->nodes[dst_id];
 
     ext->base.opcode    = OP_K_SHORTEST;
     ext->base.arity     = 2;
