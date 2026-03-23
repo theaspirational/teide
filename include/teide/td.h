@@ -861,7 +861,7 @@ td_t* td_list_set(td_t* list, int64_t idx, td_t* item);
 
 /* ===== Symbol Intern Table API ===== */
 
-void     td_sym_init(void);
+td_err_t td_sym_init(void);
 void     td_sym_destroy(void);
 int64_t  td_sym_intern(const char* str, size_t len);
 int64_t  td_sym_find(const char* str, size_t len);

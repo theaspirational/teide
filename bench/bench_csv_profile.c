@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
     /* Pre-fault the file into page cache */
     {
         td_heap_init();
-        td_sym_init();
+        assert(td_sym_init() == TD_OK);
         td_t* warmup = td_read_csv(csv_path);
         if (warmup && !TD_IS_ERR(warmup)) td_release(warmup);
         td_sym_destroy();
@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
     }
 
     td_heap_init();
-    td_sym_init();
+    assert(td_sym_init() == TD_OK);
 
     td_t* t = td_read_csv(csv_path);
     if (t && !TD_IS_ERR(t)) td_release(t);
