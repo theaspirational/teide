@@ -13228,8 +13228,8 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
 
     int64_t n = rel->fwd.n_nodes;
     int64_t m = rel->fwd.n_edges;
-    int64_t src_id = src_val->i64;
-    int64_t dst_id = dst_val ? dst_val->i64 : -1;
+    int64_t src_id = td_is_atom(src_val) ? src_val->i64 : ((int64_t*)td_data(src_val))[0];
+    int64_t dst_id = !dst_val ? -1 : td_is_atom(dst_val) ? dst_val->i64 : ((int64_t*)td_data(dst_val))[0];
 
     if (src_id < 0 || src_id >= n) return TD_ERR_PTR(TD_ERR_RANGE);
 
@@ -13363,8 +13363,8 @@ static td_t* exec_astar(td_graph_t* g, td_op_t* op,
 
     int64_t n = rel->fwd.n_nodes;
     int64_t m = rel->fwd.n_edges;
-    int64_t src_id = src_val->i64;
-    int64_t dst_id = dst_val->i64;
+    int64_t src_id = td_is_atom(src_val) ? src_val->i64 : ((int64_t*)td_data(src_val))[0];
+    int64_t dst_id = td_is_atom(dst_val) ? dst_val->i64 : ((int64_t*)td_data(dst_val))[0];
 
     if (src_id < 0 || src_id >= n) return TD_ERR_PTR(TD_ERR_RANGE);
     if (dst_id < 0 || dst_id >= n) return TD_ERR_PTR(TD_ERR_RANGE);
@@ -13506,8 +13506,8 @@ static td_t* exec_k_shortest(td_graph_t* g, td_op_t* op,
 
     int64_t n = rel->fwd.n_nodes;
     int64_t m = rel->fwd.n_edges;
-    int64_t src_id = src_val->i64;
-    int64_t dst_id = dst_val->i64;
+    int64_t src_id = td_is_atom(src_val) ? src_val->i64 : ((int64_t*)td_data(src_val))[0];
+    int64_t dst_id = td_is_atom(dst_val) ? dst_val->i64 : ((int64_t*)td_data(dst_val))[0];
     uint16_t K = ext->graph.max_iter;
 
     if (src_id < 0 || src_id >= n || dst_id < 0 || dst_id >= n)
@@ -13589,7 +13589,7 @@ static td_t* exec_k_shortest(td_graph_t* g, td_op_t* op,
     int64_t plen = 0;
     for (int64_t v = dst_id; v != -1; v = parent[v]) {
         tmp_path[plen++] = v;
-        if (plen > n) break;  /* safety: avoid infinite loop on corrupt parent */
+        if (plen >= n) break;  /* safety: avoid infinite loop on corrupt parent */
     }
     for (int64_t i = 0; i < plen / 2; i++) {
         int64_t tmp = tmp_path[i];
@@ -13660,7 +13660,7 @@ static td_t* exec_k_shortest(td_graph_t* g, td_op_t* op,
             int64_t spur_len = 0;
             for (int64_t v = dst_id; v != -1; v = parent[v]) {
                 tmp_path[spur_len++] = v;
-                if (spur_len > n) break;
+                if (spur_len >= n) break;
             }
             for (int64_t a = 0; a < spur_len / 2; a++) {
                 int64_t tmp = tmp_path[a];
