@@ -2041,13 +2041,22 @@ static MunitResult test_degree_cent(const void* params, void* data) {
     int64_t* in_d  = (int64_t*)td_data(in_col);
     int64_t* deg_d = (int64_t*)td_data(deg_col);
 
+    /* Node 0: out=2, in=1, total=3 */
     munit_assert_int(out_d[0], ==, 2);
     munit_assert_int(in_d[0],  ==, 1);
     munit_assert_int(deg_d[0], ==, 3);
-
+    /* Node 1: out=2, in=1, total=3 */
+    munit_assert_int(out_d[1], ==, 2);
+    munit_assert_int(in_d[1],  ==, 1);
+    munit_assert_int(deg_d[1], ==, 3);
+    /* Node 2: out=1, in=2, total=3 */
     munit_assert_int(out_d[2], ==, 1);
     munit_assert_int(in_d[2],  ==, 2);
     munit_assert_int(deg_d[2], ==, 3);
+    /* Node 3: out=1, in=2, total=3 */
+    munit_assert_int(out_d[3], ==, 1);
+    munit_assert_int(in_d[3],  ==, 2);
+    munit_assert_int(deg_d[3], ==, 3);
 
     td_release(result);
     td_graph_free(g);
@@ -2107,10 +2116,16 @@ static MunitResult test_topsort(const void* params, void* data) {
     munit_assert_ptr_not_null(order_col);
     int64_t* ord = (int64_t*)td_data(order_col);
 
-    /* Node 0 must have lowest order */
+    /* Order values must be a valid permutation of [0..3] */
+    uint8_t seen[4] = {0};
+    for (int i = 0; i < 4; i++) {
+        munit_assert_true(ord[i] >= 0 && ord[i] < 4);
+        munit_assert_false(seen[ord[i]]);
+        seen[ord[i]] = 1;
+    }
+    /* Node 0 must come before 1,2; node 3 must come after 1,2 */
     munit_assert_true(ord[0] < ord[1]);
     munit_assert_true(ord[0] < ord[2]);
-    /* Node 3 must have highest order */
     munit_assert_true(ord[3] > ord[1]);
     munit_assert_true(ord[3] > ord[2]);
 
@@ -2200,9 +2215,17 @@ static MunitResult test_dfs(const void* params, void* data) {
     munit_assert_int(depths[0], ==, 0);
     munit_assert_int(parents[0], ==, -1);
 
-    /* All depths should be >= 0 */
+    /* All 4 nodes must be distinct and valid */
+    uint8_t node_seen[4] = {0};
     for (int64_t i = 0; i < 4; i++) {
+        munit_assert_true(nodes[i] >= 0 && nodes[i] < 4);
+        munit_assert_false(node_seen[nodes[i]]);
+        node_seen[nodes[i]] = 1;
         munit_assert_int(depths[i], >=, 0);
+        /* Non-root nodes must have a valid parent */
+        if (i > 0) {
+            munit_assert_true(parents[i] >= 0 && parents[i] < 4);
+        }
     }
 
     td_release(result);
@@ -2238,6 +2261,23 @@ static MunitResult test_dfs_max_depth(const void* params, void* data) {
 
     /* With max_depth=1 from node 0: nodes 0, 1, 2 (not 3) */
     munit_assert_int(td_table_nrows(result), ==, 3);
+
+    /* Verify correct nodes and depths */
+    int64_t node_sym   = td_sym_intern("_node", 5);
+    int64_t depth_sym  = td_sym_intern("_depth", 6);
+    td_t* node_col  = td_table_get_col(result, node_sym);
+    td_t* depth_col = td_table_get_col(result, depth_sym);
+    int64_t* ns = (int64_t*)td_data(node_col);
+    int64_t* ds = (int64_t*)td_data(depth_col);
+    uint8_t found[4] = {0};
+    for (int64_t i = 0; i < 3; i++) {
+        munit_assert_true(ds[i] <= 1);
+        munit_assert_true(ns[i] >= 0 && ns[i] < 4);
+        found[ns[i]] = 1;
+    }
+    /* Node 3 should not be reached at depth 1 */
+    munit_assert_true(found[0] && found[1] && found[2]);
+    munit_assert_false(found[3]);
 
     td_release(result);
     td_graph_free(g);

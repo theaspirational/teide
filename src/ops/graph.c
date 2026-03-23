@@ -1245,7 +1245,6 @@ td_op_t* td_degree_cent(td_graph_t* g, td_rel_t* rel) {
     ext->base.out_type = TD_TABLE;
     ext->base.est_rows = (uint32_t)rel->fwd.n_nodes;
     ext->graph.rel     = rel;
-    ext->graph.direction = 2;
 
     g->nodes[ext->base.id] = ext->base;
     return &g->nodes[ext->base.id];
@@ -1262,7 +1261,6 @@ td_op_t* td_topsort(td_graph_t* g, td_rel_t* rel) {
     ext->base.out_type = TD_TABLE;
     ext->base.est_rows = (uint32_t)rel->fwd.n_nodes;
     ext->graph.rel     = rel;
-    ext->graph.direction = 0;
 
     g->nodes[ext->base.id] = ext->base;
     return &g->nodes[ext->base.id];

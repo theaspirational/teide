@@ -13671,7 +13671,7 @@ static td_t* exec_topsort(td_graph_t* g, td_op_t* op) {
     /* Cycle detection: not all nodes processed */
     if (count < n) {
         td_scratch_arena_reset(&arena);
-        return TD_ERR_PTR(TD_ERR_SCHEMA);  /* cycle detected */
+        return TD_ERR_PTR(TD_ERR_DOMAIN);  /* cycle detected */
     }
 
     /* Build result */
@@ -13737,27 +13737,30 @@ static td_t* exec_dfs(td_graph_t* g, td_op_t* op, td_t* src_val) {
     td_scratch_arena_t arena;
     td_scratch_arena_init(&arena);
 
-    /* DFS uses paired stack: node + depth */
-    int64_t* stack_node  = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
-    int64_t* stack_depth = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
-    uint8_t* visited     = (uint8_t*)td_scratch_arena_push(&arena, (size_t)n);
-    int64_t* res_node    = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
-    int64_t* res_depth   = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
-    int64_t* res_parent  = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
-    int64_t* parent_map  = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
-    if (!stack_node || !stack_depth || !visited ||
-        !res_node || !res_depth || !res_parent || !parent_map) {
+    /* Stack can hold up to m entries (one per edge traversal) */
+    int64_t m = rel->fwd.n_edges;
+    int64_t stack_cap = m > n ? m + 1 : n + 1;
+
+    int64_t* stack_node   = (int64_t*)td_scratch_arena_push(&arena, (size_t)stack_cap * sizeof(int64_t));
+    int64_t* stack_depth  = (int64_t*)td_scratch_arena_push(&arena, (size_t)stack_cap * sizeof(int64_t));
+    int64_t* stack_parent = (int64_t*)td_scratch_arena_push(&arena, (size_t)stack_cap * sizeof(int64_t));
+    uint8_t* visited      = (uint8_t*)td_scratch_arena_push(&arena, (size_t)n);
+    int64_t* res_node     = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    int64_t* res_depth    = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    int64_t* res_parent   = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    if (!stack_node || !stack_depth || !stack_parent || !visited ||
+        !res_node || !res_depth || !res_parent) {
         td_scratch_arena_reset(&arena);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
 
     memset(visited, 0, (size_t)n);
-    for (int64_t i = 0; i < n; i++) parent_map[i] = -1;
 
     /* Push source */
     int64_t sp = 0;
-    stack_node[sp]  = start_node;
-    stack_depth[sp] = 0;
+    stack_node[sp]   = start_node;
+    stack_depth[sp]  = 0;
+    stack_parent[sp] = -1;
     sp++;
 
     int64_t count = 0;
@@ -13766,13 +13769,14 @@ static td_t* exec_dfs(td_graph_t* g, td_op_t* op, td_t* src_val) {
         sp--;
         int64_t v = stack_node[sp];
         int64_t d = stack_depth[sp];
+        int64_t p = stack_parent[sp];
 
         if (visited[v]) continue;
         visited[v] = 1;
 
         res_node[count]   = v;
         res_depth[count]  = d;
-        res_parent[count] = parent_map[v];
+        res_parent[count] = p;
         count++;
 
         if (d < max_depth) {
@@ -13782,9 +13786,9 @@ static td_t* exec_dfs(td_graph_t* g, td_op_t* op, td_t* src_val) {
             for (int64_t j = end - 1; j >= start; j--) {
                 int64_t u = fwd_tgt[j];
                 if (!visited[u]) {
-                    stack_node[sp]  = u;
-                    stack_depth[sp] = d + 1;
-                    parent_map[u]   = v;
+                    stack_node[sp]   = u;
+                    stack_depth[sp]  = d + 1;
+                    stack_parent[sp] = v;
                     sp++;
                 }
             }

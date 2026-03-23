@@ -106,6 +106,9 @@ static const char* opcode_name(uint16_t op) {
         case OP_CONNECTED_COMP: return "CONNECTED_COMP";
         case OP_DIJKSTRA:      return "DIJKSTRA";
         case OP_LOUVAIN:       return "LOUVAIN";
+        case OP_DEGREE_CENT:   return "DEGREE_CENT";
+        case OP_TOPSORT:       return "TOPSORT";
+        case OP_DFS:           return "DFS";
         case OP_COSINE_SIM:    return "COSINE_SIM";
         case OP_EUCLIDEAN_DIST:return "EUCLIDEAN_DIST";
         case OP_KNN:           return "KNN";
