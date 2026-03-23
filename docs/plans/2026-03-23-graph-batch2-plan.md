@@ -457,9 +457,9 @@ git commit -m "feat: random walk — xorshift64 PRNG with dead-end handling"
 
 ### Task 4: A* shortest path — C kernel + test
 
-- [ ] Write failing test
-- [ ] Implement DAG constructor and executor kernel
-- [ ] Tests pass
+- [x] Write failing test
+- [x] Implement DAG constructor and executor kernel
+- [x] Tests pass
 
 Reuses Dijkstra's heap. Adds Euclidean heuristic from node coordinate columns.
 

@@ -218,6 +218,9 @@ void td_graph_free(td_graph_t* g) {
                 && ext->graph.sip_sel) {
                 td_release((td_t*)ext->graph.sip_sel);
             }
+            if (oc == OP_ASTAR && ext->graph.node_props) {
+                td_release((td_t*)ext->graph.node_props);
+            }
         }
     }
     /* Free extended nodes */
@@ -1408,6 +1411,38 @@ td_op_t* td_random_walk(td_graph_t* g, td_op_t* src, td_rel_t* rel,
     ext->graph.rel      = rel;
     ext->graph.max_iter = walk_length;
     ext->graph.direction = 0;
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}
+
+td_op_t* td_astar(td_graph_t* g, td_op_t* src, td_op_t* dst,
+                  td_rel_t* rel, const char* weight_col,
+                  const char* lat_col, const char* lon_col,
+                  td_t* node_props, uint8_t max_depth) {
+    if (!g || !src || !dst || !rel || !weight_col || !lat_col || !lon_col || !node_props)
+        return NULL;
+
+    td_op_ext_t* ext = graph_alloc_ext_node(g);
+    if (!ext) return NULL;
+
+    src = &g->nodes[src->id];
+    dst = &g->nodes[dst->id];
+
+    ext->base.opcode    = OP_ASTAR;
+    ext->base.arity     = 2;
+    ext->base.inputs[0] = src;
+    ext->base.inputs[1] = dst;
+    ext->base.out_type  = TD_TABLE;
+    ext->base.est_rows  = (uint32_t)rel->fwd.n_nodes;
+    ext->graph.rel       = rel;
+    ext->graph.direction = 0;
+    ext->graph.max_depth = max_depth;
+    ext->graph.weight_col_sym = td_sym_intern(weight_col, (int64_t)strlen(weight_col));
+    ext->graph.coord_col_syms[0] = td_sym_intern(lat_col, (int64_t)strlen(lat_col));
+    ext->graph.coord_col_syms[1] = td_sym_intern(lon_col, (int64_t)strlen(lon_col));
+    ext->graph.node_props = node_props;
+    td_retain(node_props);
+
     g->nodes[ext->base.id] = ext->base;
     return &g->nodes[ext->base.id];
 }

@@ -13298,6 +13298,150 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
     return result;
 }
 
+/* exec_astar: A* shortest path with Euclidean coordinate heuristic */
+static td_t* exec_astar(td_graph_t* g, td_op_t* op,
+                         td_t* src_val, td_t* dst_val) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+
+    td_rel_t* rel = (td_rel_t*)ext->graph.rel;
+    if (!rel) return TD_ERR_PTR(TD_ERR_SCHEMA);
+    if (!rel->fwd.props) return TD_ERR_PTR(TD_ERR_SCHEMA);
+
+    td_t* np = (td_t*)ext->graph.node_props;
+    if (!np) return TD_ERR_PTR(TD_ERR_SCHEMA);
+
+    int64_t n = rel->fwd.n_nodes;
+    int64_t m = rel->fwd.n_edges;
+    int64_t src_id = src_val->i64;
+    int64_t dst_id = dst_val->i64;
+
+    if (src_id < 0 || src_id >= n) return TD_ERR_PTR(TD_ERR_RANGE);
+    if (dst_id < 0 || dst_id >= n) return TD_ERR_PTR(TD_ERR_RANGE);
+
+    /* Resolve weight column from edge properties */
+    int64_t weight_sym = ext->graph.weight_col_sym;
+    td_t* weight_vec = td_table_get_col(rel->fwd.props, weight_sym);
+    if (!weight_vec || TD_IS_ERR(weight_vec)) return TD_ERR_PTR(TD_ERR_SCHEMA);
+    double* weights = (double*)td_data(weight_vec);
+
+    /* Resolve coordinate columns from node properties */
+    td_t* lat_vec = td_table_get_col(np, ext->graph.coord_col_syms[0]);
+    td_t* lon_vec = td_table_get_col(np, ext->graph.coord_col_syms[1]);
+    if (!lat_vec || !lon_vec) return TD_ERR_PTR(TD_ERR_SCHEMA);
+    double* lat = (double*)td_data(lat_vec);
+    double* lon = (double*)td_data(lon_vec);
+
+    int64_t heap_cap = (m > n ? m : n) + 1;
+
+    td_scratch_arena_t arena;
+    td_scratch_arena_init(&arena);
+
+    double*  dist    = (double*)td_scratch_arena_push(&arena, (size_t)n * sizeof(double));
+    bool*    visited = (bool*)td_scratch_arena_push(&arena, (size_t)n * sizeof(bool));
+    int64_t* depth   = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    dijk_entry_t* heap = (dijk_entry_t*)td_scratch_arena_push(&arena,
+                              (size_t)heap_cap * sizeof(dijk_entry_t));
+    if (!dist || !visited || !depth || !heap) {
+        td_scratch_arena_reset(&arena);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    memset(visited, 0, (size_t)n * sizeof(bool));
+    memset(depth, 0, (size_t)n * sizeof(int64_t));
+
+    for (int64_t i = 0; i < n; i++) dist[i] = 1e308;
+    dist[src_id] = 0.0;
+
+    /* A* uses f = g + h; heap stores f-cost for priority ordering */
+    double dx = lat[src_id] - lat[dst_id];
+    double dy = lon[src_id] - lon[dst_id];
+    double h0 = sqrt(dx * dx + dy * dy);
+    int64_t heap_size = 0;
+    dijk_heap_push(heap, &heap_size, h0, src_id);
+
+    int64_t* fwd_off = (int64_t*)td_data(rel->fwd.offsets);
+    int64_t* fwd_tgt = (int64_t*)td_data(rel->fwd.targets);
+    int64_t* fwd_row = (int64_t*)td_data(rel->fwd.rowmap);
+
+    while (heap_size > 0) {
+        dijk_entry_t top = dijk_heap_pop(heap, &heap_size);
+        int64_t u = top.node;
+        if (visited[u]) continue;
+        visited[u] = true;
+
+        if (u == dst_id) break;
+
+        for (int64_t j = fwd_off[u]; j < fwd_off[u + 1]; j++) {
+            int64_t v = fwd_tgt[j];
+            int64_t edge_row = fwd_row[j];
+            double w = weights[edge_row];
+            double new_dist = dist[u] + w;
+            if (new_dist < dist[v]) {
+                dist[v] = new_dist;
+                depth[v] = depth[u] + 1;
+                /* f = g + h (Euclidean heuristic) */
+                double hdx = lat[v] - lat[dst_id];
+                double hdy = lon[v] - lon[dst_id];
+                double hv = sqrt(hdx * hdx + hdy * hdy);
+                dijk_heap_push(heap, &heap_size, new_dist + hv, v);
+            }
+        }
+    }
+
+    /* Collect reachable nodes */
+    int64_t count = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (dist[i] < 1e308) count++;
+    }
+
+    td_t* node_vec  = td_vec_new(TD_I64, count);
+    td_t* dist_vec  = td_vec_new(TD_F64, count);
+    td_t* depth_vec = td_vec_new(TD_I64, count);
+    if (!node_vec || TD_IS_ERR(node_vec) ||
+        !dist_vec || TD_IS_ERR(dist_vec) ||
+        !depth_vec || TD_IS_ERR(depth_vec)) {
+        td_scratch_arena_reset(&arena);
+        if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
+        if (dist_vec && !TD_IS_ERR(dist_vec)) td_release(dist_vec);
+        if (depth_vec && !TD_IS_ERR(depth_vec)) td_release(depth_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    int64_t* ndata = (int64_t*)td_data(node_vec);
+    double*  ddata = (double*)td_data(dist_vec);
+    int64_t* hdata = (int64_t*)td_data(depth_vec);
+    int64_t idx = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (dist[i] < 1e308) {
+            ndata[idx] = i;
+            ddata[idx] = dist[i];
+            hdata[idx] = depth[i];
+            idx++;
+        }
+    }
+    node_vec->len = count;
+    dist_vec->len = count;
+    depth_vec->len = count;
+
+    td_scratch_arena_reset(&arena);
+
+    td_t* result = td_table_new(3);
+    if (!result || TD_IS_ERR(result)) {
+        td_release(node_vec);
+        td_release(dist_vec);
+        td_release(depth_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_release(node_vec);
+    result = td_table_add_col(result, td_sym_intern("_dist", 5), dist_vec);
+    td_release(dist_vec);
+    result = td_table_add_col(result, td_sym_intern("_depth", 6), depth_vec);
+    td_release(depth_vec);
+
+    return result;
+}
+
 /* exec_wco_join: Worst-Case Optimal Join via general Leapfrog Triejoin */
 static td_t* exec_wco_join(td_graph_t* g, td_op_t* op) {
     td_op_ext_t* ext = find_ext(g, op->id);
@@ -15043,6 +15187,17 @@ static td_t* exec_node(td_graph_t* g, td_op_t* op) {
             if (!src || TD_IS_ERR(src)) return src;
             td_t* result = exec_random_walk(g, op, src);
             td_release(src);
+            return result;
+        }
+
+        case OP_ASTAR: {
+            td_t* src = exec_node(g, op->inputs[0]);
+            if (!src || TD_IS_ERR(src)) return src;
+            td_t* dst = exec_node(g, op->inputs[1]);
+            if (!dst || TD_IS_ERR(dst)) { td_release(src); return dst; }
+            td_t* result = exec_astar(g, op, src, dst);
+            td_release(src);
+            td_release(dst);
             return result;
         }
 

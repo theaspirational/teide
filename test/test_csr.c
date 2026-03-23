@@ -2396,6 +2396,103 @@ static MunitResult test_random_walk(const void* params, void* data) {
 }
 
 /* --------------------------------------------------------------------------
+ * Test: A* shortest path
+ * -------------------------------------------------------------------------- */
+
+/* Weighted graph with lat/lon node properties:
+ * 5 nodes, 6 edges:
+ *   0->1 (w=1.0), 0->2 (w=4.0), 1->3 (w=2.0), 2->3 (w=1.0), 3->4 (w=3.0), 1->4 (w=10.0)
+ * Node coordinates: 0=(0,0), 1=(1,0), 2=(0,2), 3=(2,1), 4=(3,0) */
+static void make_astar_graph(td_t** out_edges, td_rel_t** out_rel,
+                             td_t** out_node_props) {
+    int64_t src[] = {0, 0, 1, 2, 3, 1};
+    int64_t dst[] = {1, 2, 3, 3, 4, 4};
+    double  wts[] = {1.0, 4.0, 2.0, 1.0, 3.0, 10.0};
+    int64_t ne = 6;
+
+    td_t* sv = td_vec_from_raw(TD_I64, src, ne);
+    td_t* dv = td_vec_from_raw(TD_I64, dst, ne);
+    td_t* wv = td_vec_new(TD_F64, ne);
+    memcpy(td_data(wv), wts, sizeof(wts));
+    wv->len = ne;
+
+    td_t* edges = td_table_new(3);
+    edges = td_table_add_col(edges, td_sym_intern("src", 3), sv); td_release(sv);
+    edges = td_table_add_col(edges, td_sym_intern("dst", 3), dv); td_release(dv);
+    edges = td_table_add_col(edges, td_sym_intern("weight", 6), wv); td_release(wv);
+
+    *out_rel = td_rel_from_edges(edges, "src", "dst", 5, 5, false);
+    td_rel_set_props(*out_rel, edges);
+    *out_edges = edges;
+
+    /* Node property table with lat/lon */
+    double lat_arr[] = {0.0, 1.0, 0.0, 2.0, 3.0};
+    double lon_arr[] = {0.0, 0.0, 2.0, 1.0, 0.0};
+    td_t* nv = td_vec_from_raw(TD_I64, (int64_t[]){0,1,2,3,4}, 5);
+    td_t* latv = td_vec_new(TD_F64, 5);
+    memcpy(td_data(latv), lat_arr, sizeof(lat_arr));
+    latv->len = 5;
+    td_t* lonv = td_vec_new(TD_F64, 5);
+    memcpy(td_data(lonv), lon_arr, sizeof(lon_arr));
+    lonv->len = 5;
+
+    td_t* np = td_table_new(3);
+    np = td_table_add_col(np, td_sym_intern("_node", 5), nv); td_release(nv);
+    np = td_table_add_col(np, td_sym_intern("lat", 3), latv); td_release(latv);
+    np = td_table_add_col(np, td_sym_intern("lon", 3), lonv); td_release(lonv);
+    *out_node_props = np;
+}
+
+static MunitResult test_astar(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    td_t* edges; td_rel_t* rel; td_t* node_props;
+    make_astar_graph(&edges, &rel, &node_props);
+
+    td_graph_t* g = td_graph_new(edges);
+    td_op_t* src = td_const_i64(g, 0);
+    td_op_t* dst = td_const_i64(g, 4);
+    td_op_t* as = td_astar(g, src, dst, rel, "weight", "lat", "lon", node_props, 255);
+    munit_assert_ptr_not_null(as);
+
+    td_t* result = td_execute(g, as);
+    munit_assert_ptr_not_null(result);
+    munit_assert_false(TD_IS_ERR(result));
+
+    /* Should find path to node 4 with dist=6.0 (0->1->3->4: 1+2+3) */
+    int64_t nrows = td_table_nrows(result);
+    munit_assert_int(nrows, >, 0);
+
+    int64_t node_sym = td_sym_intern("_node", 5);
+    int64_t dist_sym = td_sym_intern("_dist", 5);
+    td_t* node_col = td_table_get_col(result, node_sym);
+    td_t* dist_col = td_table_get_col(result, dist_sym);
+    int64_t* nodes = (int64_t*)td_data(node_col);
+    double* dists = (double*)td_data(dist_col);
+
+    bool found = false;
+    for (int64_t i = 0; i < nrows; i++) {
+        if (nodes[i] == 4) {
+            munit_assert_double(dists[i], >=, 5.99);
+            munit_assert_double(dists[i], <=, 6.01);
+            found = true;
+        }
+    }
+    munit_assert_true(found);
+
+    td_release(result);
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(node_props);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* --------------------------------------------------------------------------
  * Suite definition
  * -------------------------------------------------------------------------- */
 
@@ -2449,6 +2546,7 @@ static MunitTest csr_tests[] = {
     { "/dfs_max_depth",   test_dfs_max_depth,          NULL, NULL, 0, NULL },
     { "/cluster_coeff",  test_cluster_coeff,          NULL, NULL, 0, NULL },
     { "/random_walk",   test_random_walk,            NULL, NULL, 0, NULL },
+    { "/astar",         test_astar,                  NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },  /* terminator */
 };
 

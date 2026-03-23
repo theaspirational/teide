@@ -603,6 +603,7 @@ typedef struct td_op_ext {
             double    damping;        /* PageRank damping factor      */
             int64_t   weight_col_sym; /* Dijkstra/Astar/Yen weight column   */
             int64_t   coord_col_syms[2]; /* A*: lat/lon property column names */
+            void*     node_props;       /* td_t* node property table (A*: coords) */
         } graph;
         struct {  /* OP_WCO_JOIN */
             void**    rels;           /* td_rel_t** array */
@@ -1022,7 +1023,8 @@ td_op_t* td_topsort(td_graph_t* g, td_rel_t* rel);
 td_op_t* td_dfs(td_graph_t* g, td_op_t* src, td_rel_t* rel, uint8_t max_depth);
 td_op_t* td_astar(td_graph_t* g, td_op_t* src, td_op_t* dst,
                   td_rel_t* rel, const char* weight_col,
-                  const char* lat_col, const char* lon_col, uint8_t max_depth);
+                  const char* lat_col, const char* lon_col,
+                  td_t* node_props, uint8_t max_depth);
 td_op_t* td_k_shortest(td_graph_t* g, td_op_t* src, td_op_t* dst,
                        td_rel_t* rel, const char* weight_col, uint16_t k);
 td_op_t* td_cluster_coeff(td_graph_t* g, td_rel_t* rel);
