@@ -480,6 +480,11 @@ static inline uint8_t td_sym_dict_width(int64_t dict_size) {
 #define OP_DIJKSTRA        86   /* weighted shortest path (Dijkstra)  */
 #define OP_LOUVAIN         87   /* community detection (Louvain)      */
 
+/* Opcodes — Graph algorithms (batch 1) */
+#define OP_DEGREE_CENT     92   /* degree centrality                  */
+#define OP_TOPSORT         93   /* topological sort (Kahn's)          */
+#define OP_DFS             94   /* depth-first search traversal       */
+
 /* Opcodes — Vector similarity */
 #define OP_COSINE_SIM      88   /* cosine similarity between embeddings   */
 #define OP_EUCLIDEAN_DIST  89   /* euclidean distance between embeddings  */
@@ -1005,6 +1010,9 @@ td_op_t* td_dijkstra(td_graph_t* g, td_op_t* src, td_op_t* dst,
                       uint8_t max_depth);
 td_op_t* td_louvain(td_graph_t* g, td_rel_t* rel,
                      uint16_t max_iter);
+td_op_t* td_degree_cent(td_graph_t* g, td_rel_t* rel);
+td_op_t* td_topsort(td_graph_t* g, td_rel_t* rel);
+td_op_t* td_dfs(td_graph_t* g, td_op_t* src, td_rel_t* rel, uint8_t max_depth);
 
 /* Vector similarity ops */
 td_op_t* td_cosine_sim(td_graph_t* g, td_op_t* emb_col,
