@@ -14311,7 +14311,7 @@ static td_t* exec_cluster_coeff(td_graph_t* g, td_op_t* op) {
                 if (nbr_set[fwd_tgt[j]] && fwd_tgt[j] != v && fwd_tgt[j] != u) triangles++;
             }
         }
-        cdata[v] = (double)triangles / (double)(deg * (deg - 1));
+        cdata[v] = (double)triangles / ((double)deg * (double)(deg - 1));
 
         /* Clear only entries we set (O(deg) instead of O(n)) */
         for (int64_t a = 0; a < deg; a++) nbr_set[nbrs[a]] = 0;
