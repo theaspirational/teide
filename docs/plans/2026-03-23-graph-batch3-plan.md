@@ -638,10 +638,10 @@ git commit -m "feat: MST (Kruskal) — union-find with path compression, sorted 
 
 ### Task 5: Rust bindings + SQL for all 3 algorithms (teide-rs)
 
-- [ ] Add FFI declarations in ffi.rs
-- [ ] Add Graph methods in engine.rs
-- [ ] Add SQL table function + GRAPH_TABLE dispatch
-- [ ] Vendor update, Rust tests pass
+- [x] Add FFI declarations in ffi.rs
+- [x] Add Graph methods in engine.rs
+- [x] Add SQL table function + GRAPH_TABLE dispatch
+- [x] Vendor update, Rust tests pass
 
 **Files:**
 - Modify: `../teide-rs/src/ffi.rs` (add FFI declarations)
