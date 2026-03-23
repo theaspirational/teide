@@ -59,7 +59,7 @@ git commit -m "feat: add opcodes and declarations for degree centrality, topsort
 
 ---
 
-### Task 2: Degree centrality — DAG constructor + executor + test
+### Task 2: Degree centrality — DAG constructor + executor + test [x]
 
 **Files:**
 - Modify: `src/ops/graph.c` (add td_degree_cent)

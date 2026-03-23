@@ -13551,6 +13551,71 @@ static td_t* exec_louvain(td_graph_t* g, td_op_t* op) {
 }
 
 /* --------------------------------------------------------------------------
+ * exec_degree_cent: in/out/total degree from CSR offsets. O(n).
+ * -------------------------------------------------------------------------- */
+static td_t* exec_degree_cent(td_graph_t* g, td_op_t* op) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+
+    td_rel_t* rel = (td_rel_t*)ext->graph.rel;
+    if (!rel) return TD_ERR_PTR(TD_ERR_SCHEMA);
+
+    int64_t n = rel->fwd.n_nodes;
+    if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
+
+    int64_t* fwd_off = (int64_t*)td_data(rel->fwd.offsets);
+    int64_t* rev_off = (int64_t*)td_data(rel->rev.offsets);
+
+    td_t* node_vec = td_vec_new(TD_I64, n);
+    td_t* in_vec   = td_vec_new(TD_I64, n);
+    td_t* out_vec  = td_vec_new(TD_I64, n);
+    td_t* deg_vec  = td_vec_new(TD_I64, n);
+    if (!node_vec || TD_IS_ERR(node_vec) ||
+        !in_vec   || TD_IS_ERR(in_vec)   ||
+        !out_vec  || TD_IS_ERR(out_vec)  ||
+        !deg_vec  || TD_IS_ERR(deg_vec)) {
+        if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
+        if (in_vec   && !TD_IS_ERR(in_vec))   td_release(in_vec);
+        if (out_vec  && !TD_IS_ERR(out_vec))  td_release(out_vec);
+        if (deg_vec  && !TD_IS_ERR(deg_vec))  td_release(deg_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    int64_t* ndata   = (int64_t*)td_data(node_vec);
+    int64_t* in_data = (int64_t*)td_data(in_vec);
+    int64_t* out_data= (int64_t*)td_data(out_vec);
+    int64_t* deg_data= (int64_t*)td_data(deg_vec);
+
+    for (int64_t i = 0; i < n; i++) {
+        ndata[i]    = i;
+        out_data[i] = fwd_off[i + 1] - fwd_off[i];
+        in_data[i]  = rev_off[i + 1] - rev_off[i];
+        deg_data[i] = out_data[i] + in_data[i];
+    }
+    node_vec->len = n;
+    in_vec->len   = n;
+    out_vec->len  = n;
+    deg_vec->len  = n;
+
+    td_t* result = td_table_new(4);
+    if (!result || TD_IS_ERR(result)) {
+        td_release(node_vec); td_release(in_vec);
+        td_release(out_vec);  td_release(deg_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_release(node_vec);
+    result = td_table_add_col(result, td_sym_intern("_in_degree", 10), in_vec);
+    td_release(in_vec);
+    result = td_table_add_col(result, td_sym_intern("_out_degree", 11), out_vec);
+    td_release(out_vec);
+    result = td_table_add_col(result, td_sym_intern("_degree", 7), deg_vec);
+    td_release(deg_vec);
+
+    return result;
+}
+
+/* --------------------------------------------------------------------------
  * exec_cosine_sim: cosine similarity between embedding column and query vector.
  * dot(a,b) / (||a|| * ||b||) per row.
  * Input: TD_F32 embedding column (flat N*D floats)
@@ -14567,6 +14632,10 @@ static td_t* exec_node(td_graph_t* g, td_op_t* op) {
 
         case OP_LOUVAIN: {
             return exec_louvain(g, op);
+        }
+
+        case OP_DEGREE_CENT: {
+            return exec_degree_cent(g, op);
         }
 
         case OP_COSINE_SIM: {

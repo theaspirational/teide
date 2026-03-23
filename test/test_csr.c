@@ -1997,6 +1997,69 @@ static MunitResult test_var_expand_bad_range(const void* params, void* data) {
 }
 
 /* --------------------------------------------------------------------------
+ * test_degree_cent: in/out/total degree from CSR offsets
+ * -------------------------------------------------------------------------- */
+static MunitResult test_degree_cent(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    td_t* edges = make_edge_table();
+    td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
+
+    td_t* tbl = td_table_new(1);
+    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6),
+                           td_vec_from_raw(TD_I64, (int64_t[]){0}, 1));
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* dc = td_degree_cent(g, rel);
+    munit_assert_ptr_not_null(dc);
+
+    td_t* result = td_execute(g, dc);
+    munit_assert_ptr_not_null(result);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(td_table_nrows(result), ==, 4);
+
+    /* Graph: 0→1, 0→2, 1→2, 1→3, 2→3, 3→0
+     * Node 0: out=2, in=1, total=3
+     * Node 1: out=2, in=1, total=3
+     * Node 2: out=1, in=2, total=3
+     * Node 3: out=1, in=2, total=3 */
+    int64_t out_sym = td_sym_intern("_out_degree", 11);
+    int64_t in_sym  = td_sym_intern("_in_degree", 10);
+    int64_t deg_sym = td_sym_intern("_degree", 7);
+
+    td_t* out_col = td_table_get_col(result, out_sym);
+    td_t* in_col  = td_table_get_col(result, in_sym);
+    td_t* deg_col = td_table_get_col(result, deg_sym);
+
+    munit_assert_ptr_not_null(out_col);
+    munit_assert_ptr_not_null(in_col);
+    munit_assert_ptr_not_null(deg_col);
+
+    int64_t* out_d = (int64_t*)td_data(out_col);
+    int64_t* in_d  = (int64_t*)td_data(in_col);
+    int64_t* deg_d = (int64_t*)td_data(deg_col);
+
+    munit_assert_int(out_d[0], ==, 2);
+    munit_assert_int(in_d[0],  ==, 1);
+    munit_assert_int(deg_d[0], ==, 3);
+
+    munit_assert_int(out_d[2], ==, 1);
+    munit_assert_int(in_d[2],  ==, 2);
+    munit_assert_int(deg_d[2], ==, 3);
+
+    td_release(result);
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* --------------------------------------------------------------------------
  * Suite definition
  * -------------------------------------------------------------------------- */
 
@@ -2043,6 +2106,7 @@ static MunitTest csr_tests[] = {
     { "/fact_rev",         test_factorized_reverse,    NULL, NULL, 0, NULL },
     { "/wco_empty",        test_wco_empty_result,      NULL, NULL, 0, NULL },
     { "/var_bad_range",    test_var_expand_bad_range,   NULL, NULL, 0, NULL },
+    { "/degree_cent",     test_degree_cent,            NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },  /* terminator */
 };
 
