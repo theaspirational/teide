@@ -664,9 +664,9 @@ git commit -m "feat: Yen's k-shortest paths — iterative Dijkstra with edge mas
 
 ### Task 6: Rust bindings for all 4 algorithms (teide-rs)
 
-- [ ] Add FFI declarations and Graph methods
-- [ ] Add integration tests and SQL dispatch
-- [ ] Build and test both repos
+- [x] Add FFI declarations and Graph methods
+- [x] Add integration tests and SQL dispatch
+- [x] Build and test both repos
 
 **Files:**
 - Modify: `../teide-rs/src/ffi.rs` (add FFI declarations)

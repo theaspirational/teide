@@ -14262,19 +14262,15 @@ static td_t* exec_cluster_coeff(td_graph_t* g, td_op_t* op) {
 
         if (deg < 2) { cdata[v] = 0.0; continue; }
 
-        /* Count triangles: for each pair of neighbors, check edge */
+        /* Count directed fwd edges between neighbors of v */
         int64_t triangles = 0;
         for (int64_t a = 0; a < deg; a++) {
             int64_t u = nbrs[a];
-            /* Check which of v's other neighbors are also neighbors of u */
+            /* Check fwd edges of u against neighbor set */
             for (int64_t j = fwd_off[u]; j < fwd_off[u+1]; j++) {
                 if (nbr_set[fwd_tgt[j]] && fwd_tgt[j] != v) triangles++;
             }
-            for (int64_t j = rev_off[u]; j < rev_off[u+1]; j++) {
-                if (nbr_set[rev_tgt[j]] && rev_tgt[j] != v) triangles++;
-            }
         }
-        /* Each triangle counted twice (once from each endpoint of the edge) */
         cdata[v] = (double)triangles / (double)(deg * (deg - 1));
     }
 
