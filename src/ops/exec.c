@@ -14368,14 +14368,17 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
     int64_t* queue   = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
     int64_t* stack   = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
 
-    /* Predecessor storage: flat array sized to total edges, with per-node counts */
+    /* Predecessor storage: flat CSR-style array with per-node offsets.
+     * Two-pass approach: BFS counts predecessors per node, prefix-sum builds
+     * offsets, then a second pass over the stack fills pred_data in grouped order. */
     int64_t m_total = rel->fwd.n_edges + rel->rev.n_edges;
     if (m_total == 0) m_total = 1;
-    int64_t* pred_data  = (int64_t*)td_scratch_arena_push(&arena, (size_t)m_total * sizeof(int64_t));
-    int64_t* pred_off   = (int64_t*)td_scratch_arena_push(&arena, (size_t)(n + 1) * sizeof(int64_t));
+    int64_t* pred_data   = (int64_t*)td_scratch_arena_push(&arena, (size_t)m_total * sizeof(int64_t));
+    int64_t* pred_off    = (int64_t*)td_scratch_arena_push(&arena, (size_t)(n + 1) * sizeof(int64_t));
+    int64_t* pred_cursor = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
 
     if (!cb || !sigma || !delta || !dist || !queue || !stack ||
-        !pred_data || !pred_off) {
+        !pred_data || !pred_off || !pred_cursor) {
         td_scratch_arena_reset(&arena);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
@@ -14395,10 +14398,9 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
         }
         sigma[s] = 1.0;
         dist[s]  = 0;
-        int64_t pred_total = 0;
         memset(pred_off, 0, (size_t)(n + 1) * sizeof(int64_t));
 
-        /* BFS from s */
+        /* BFS pass 1: discover nodes, compute sigma, count predecessors */
         int64_t q_head = 0, q_tail = 0;
         int64_t stack_top = 0;
         queue[q_tail++] = s;
@@ -14416,10 +14418,7 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
                 }
                 if (dist[w] == dist[v] + 1) {
                     sigma[w] += sigma[v];
-                    if (pred_total < m_total) {
-                        pred_data[pred_total++] = v;
-                        pred_off[w + 1]++;
-                    }
+                    pred_off[w + 1]++;
                 }
             }
             /* Reverse neighbors (undirected) */
@@ -14431,10 +14430,7 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
                 }
                 if (dist[w] == dist[v] + 1) {
                     sigma[w] += sigma[v];
-                    if (pred_total < m_total) {
-                        pred_data[pred_total++] = v;
-                        pred_off[w + 1]++;
-                    }
+                    pred_off[w + 1]++;
                 }
             }
         }
@@ -14442,6 +14438,22 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
         /* Convert pred_off counts to cumulative offsets */
         for (int64_t i = 1; i <= n; i++)
             pred_off[i] += pred_off[i - 1];
+
+        /* BFS pass 2: fill pred_data grouped by target node using write cursors */
+        for (int64_t i = 0; i < n; i++) pred_cursor[i] = pred_off[i];
+        for (int64_t si2 = 0; si2 < stack_top; si2++) {
+            int64_t v = stack[si2];
+            for (int64_t j = fwd_off[v]; j < fwd_off[v + 1]; j++) {
+                int64_t w = fwd_tgt[j];
+                if (dist[w] == dist[v] + 1)
+                    pred_data[pred_cursor[w]++] = v;
+            }
+            for (int64_t j = rev_off[v]; j < rev_off[v + 1]; j++) {
+                int64_t w = rev_tgt[j];
+                if (dist[w] == dist[v] + 1)
+                    pred_data[pred_cursor[w]++] = v;
+            }
+        }
 
         /* Back-propagation of dependencies */
         while (stack_top > 0) {
@@ -14648,6 +14660,27 @@ static td_t* exec_mst(td_graph_t* g, td_op_t* op) {
     int64_t m = rel->fwd.n_edges;
     if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
 
+    /* Single node: MST has 0 edges — return empty table */
+    if (n == 1) {
+        td_t* result = td_table_new(3);
+        if (!result || TD_IS_ERR(result)) return TD_ERR_PTR(TD_ERR_OOM);
+        td_t* sv = td_vec_new(TD_I64, 0); if (!sv || TD_IS_ERR(sv)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
+        sv->len = 0;
+        td_t* dv = td_vec_new(TD_I64, 0); if (!dv || TD_IS_ERR(dv)) { td_release(result); td_release(sv); return TD_ERR_PTR(TD_ERR_OOM); }
+        dv->len = 0;
+        td_t* wv = td_vec_new(TD_F64, 0); if (!wv || TD_IS_ERR(wv)) { td_release(result); td_release(sv); td_release(dv); return TD_ERR_PTR(TD_ERR_OOM); }
+        wv->len = 0;
+        td_t* tmp = td_table_add_col(result, td_sym_intern("_src", 4), sv); td_release(sv);
+        if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(dv); td_release(wv); return TD_ERR_PTR(TD_ERR_OOM); }
+        result = tmp;
+        tmp = td_table_add_col(result, td_sym_intern("_dst", 4), dv); td_release(dv);
+        if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(wv); return TD_ERR_PTR(TD_ERR_OOM); }
+        result = tmp;
+        tmp = td_table_add_col(result, td_sym_intern("_weight", 7), wv); td_release(wv);
+        if (!tmp || TD_IS_ERR(tmp)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
+        return tmp;
+    }
+
     int64_t weight_sym = ext->graph.weight_col_sym;
     td_t* weight_vec = td_table_get_col(rel->fwd.props, weight_sym);
     if (!weight_vec || weight_vec->type != TD_F64) return TD_ERR_PTR(TD_ERR_SCHEMA);
@@ -14726,13 +14759,18 @@ static td_t* exec_mst(td_graph_t* g, td_op_t* op) {
         td_release(src_vec); td_release(dst_vec); td_release(wt_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    result = td_table_add_col(result, td_sym_intern("_src", 4), src_vec);
+    td_t* tmp = td_table_add_col(result, td_sym_intern("_src", 4), src_vec);
     td_release(src_vec);
-    result = td_table_add_col(result, td_sym_intern("_dst", 4), dst_vec);
+    if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(dst_vec); td_release(wt_vec); return TD_ERR_PTR(TD_ERR_OOM); }
+    result = tmp;
+    tmp = td_table_add_col(result, td_sym_intern("_dst", 4), dst_vec);
     td_release(dst_vec);
-    result = td_table_add_col(result, td_sym_intern("_weight", 7), wt_vec);
+    if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(wt_vec); return TD_ERR_PTR(TD_ERR_OOM); }
+    result = tmp;
+    tmp = td_table_add_col(result, td_sym_intern("_weight", 7), wt_vec);
     td_release(wt_vec);
-    return result;
+    if (!tmp || TD_IS_ERR(tmp)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
+    return tmp;
 }
 
 /* --------------------------------------------------------------------------
