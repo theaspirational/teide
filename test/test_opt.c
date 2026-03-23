@@ -4,7 +4,7 @@
 
 /* Helper: create a test table with columns id1(I64), v1(I64), v3(F64) */
 static td_t* make_test_table(void) {
-    assert(td_sym_init() == TD_OK);
+    munit_assert_int(td_sym_init(), ==, TD_OK);
 
     int64_t n = 10;
     int64_t id1_data[] = {1, 1, 2, 2, 3, 3, 1, 2, 3, 1};

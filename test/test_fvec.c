@@ -41,7 +41,7 @@ static MunitResult test_ftable_new_free(const void* params, void* data) {
 static MunitResult test_ftable_materialize_flat(const void* params, void* data) {
     (void)params; (void)data;
     td_heap_init();
-    assert(td_sym_init() == TD_OK);
+    munit_assert_int(td_sym_init(), ==, TD_OK);
 
     td_ftable_t* ft = td_ftable_new(1);
 
@@ -75,7 +75,7 @@ static MunitResult test_ftable_materialize_flat(const void* params, void* data) 
 static MunitResult test_ftable_materialize_unflat(const void* params, void* data) {
     (void)params; (void)data;
     td_heap_init();
-    assert(td_sym_init() == TD_OK);
+    munit_assert_int(td_sym_init(), ==, TD_OK);
 
     td_ftable_t* ft = td_ftable_new(1);
 

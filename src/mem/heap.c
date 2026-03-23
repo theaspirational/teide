@@ -1081,7 +1081,7 @@ void* td_scratch_arena_push(td_scratch_arena_t* a, size_t nbytes) {
     /* 16-byte alignment */
     nbytes = (nbytes + 15) & ~(size_t)15;
 
-    if (TD_LIKELY(a->ptr + nbytes <= a->end))
+    if (TD_LIKELY(a->ptr != NULL && a->ptr + nbytes <= a->end))
         goto bump;
 
     /* Need a new backing block */

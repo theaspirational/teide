@@ -264,7 +264,7 @@ int main(void) {
 
     for (int s = 0; s < n_sizes; s++) {
         td_heap_init();
-        assert(td_sym_init() == TD_OK);
+        { td_err_t _e = td_sym_init(); (void)_e; };
 
         bench_vec_add(sizes[s]);
         bench_filter(sizes[s]);

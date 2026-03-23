@@ -41,7 +41,7 @@ static MunitResult test_sel_new(const void* params, void* data) {
 static MunitResult test_sel_from_pred(const void* params, void* data) {
     (void)params; (void)data;
     td_heap_init();
-    assert(td_sym_init() == TD_OK);
+    munit_assert_int(td_sym_init(), ==, TD_OK);
 
     /* Create bool vector: [true, false, true, false, true] */
     uint8_t bools[] = {1, 0, 1, 0, 1};
@@ -92,7 +92,7 @@ static MunitResult test_sel_and(const void* params, void* data) {
 static MunitResult test_sel_filter_integration(const void* params, void* data) {
     (void)params; (void)data;
     td_heap_init();
-    assert(td_sym_init() == TD_OK);
+    munit_assert_int(td_sym_init(), ==, TD_OK);
 
     /* Test that selection vectors work end-to-end through executor */
     int64_t vals[] = {10, 20, 30, 40, 50};

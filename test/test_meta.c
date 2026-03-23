@@ -33,7 +33,7 @@
 static void* meta_setup(const void* params, void* user_data) {
     (void)params; (void)user_data;
     td_heap_init();
-    assert(td_sym_init() == TD_OK);
+    munit_assert_int(td_sym_init(), ==, TD_OK);
     return NULL;
 }
 
