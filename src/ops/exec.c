@@ -14387,7 +14387,6 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
     }
 
     memset(cb, 0, (size_t)n * sizeof(double));
-    memset(seen_epoch, 0, (size_t)n * sizeof(int64_t));
 
     int64_t stride = (sample > 0 && (int64_t)sample < n) ? (n / n_sources) : 1;
 
@@ -14403,6 +14402,7 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
         sigma[s] = 1.0;
         dist[s]  = 0;
         memset(pred_off, 0, (size_t)(n + 1) * sizeof(int64_t));
+        memset(seen_epoch, 0, (size_t)n * sizeof(int64_t));
 
         /* BFS pass 1: discover nodes, compute sigma, count predecessors */
         int64_t q_head = 0, q_tail = 0;
@@ -14412,7 +14412,7 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
         /* Use epoch counter to deduplicate: for each v popped from queue,
          * mark forward neighbors with epoch, then skip reverse neighbors
          * already marked (bidirectional edges). Epoch increments per v. */
-        int64_t epoch = si * n;  /* unique epoch space per BFS source */
+        int64_t epoch = 0;
         while (q_head < q_tail) {
             int64_t v = queue[q_head++];
             stack[stack_top++] = v;
@@ -14452,7 +14452,7 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
         /* BFS pass 2: fill pred_data grouped by target node using write cursors.
          * Same dedup logic as pass 1 to avoid duplicate predecessor entries. */
         for (int64_t i = 0; i < n; i++) pred_cursor[i] = pred_off[i];
-        epoch = si * n;
+        epoch = 0;
         for (int64_t si2 = 0; si2 < stack_top; si2++) {
             int64_t v = stack[si2];
             epoch++;
@@ -14603,12 +14603,10 @@ static td_t* exec_closeness(td_graph_t* g, td_op_t* op) {
         }
     }
 
-    /* Normalize if sampled: scale by n/sample so values approximate full run */
-    /* (Not needed for closeness — each source computes its own value independently) */
-
-    /* Build result table */
-    td_t* node_vec = td_vec_new(TD_I64, n);
-    td_t* cent_vec = td_vec_new(TD_F64, n);
+    /* Build result table: when sampling, only emit computed nodes */
+    int64_t n_out = n_sources;
+    td_t* node_vec = td_vec_new(TD_I64, n_out);
+    td_t* cent_vec = td_vec_new(TD_F64, n_out);
     if (!node_vec || TD_IS_ERR(node_vec) || !cent_vec || TD_IS_ERR(cent_vec)) {
         td_scratch_arena_reset(&arena);
         if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
@@ -14617,9 +14615,17 @@ static td_t* exec_closeness(td_graph_t* g, td_op_t* op) {
     }
     int64_t* ndata = (int64_t*)td_data(node_vec);
     double*  cdata = (double*)td_data(cent_vec);
-    for (int64_t i = 0; i < n; i++) { ndata[i] = i; cdata[i] = closeness[i]; }
-    node_vec->len = n;
-    cent_vec->len = n;
+    if (n_sources == n) {
+        for (int64_t i = 0; i < n; i++) { ndata[i] = i; cdata[i] = closeness[i]; }
+    } else {
+        for (int64_t si = 0; si < n_sources; si++) {
+            int64_t s = (si * stride) % n;
+            ndata[si] = s;
+            cdata[si] = closeness[s];
+        }
+    }
+    node_vec->len = n_out;
+    cent_vec->len = n_out;
     td_scratch_arena_reset(&arena);
 
     td_t* result = td_table_new(2);
@@ -14678,8 +14684,8 @@ static td_t* exec_mst(td_graph_t* g, td_op_t* op) {
     int64_t m = rel->fwd.n_edges;
     if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
 
-    /* Single node: MST has 0 edges — return empty table */
-    if (n == 1) {
+    /* No MST edges possible: single node or no edges — return empty table */
+    if (n == 1 || m == 0) {
         td_t* result = td_table_new(3);
         if (!result || TD_IS_ERR(result)) return TD_ERR_PTR(TD_ERR_OOM);
         td_t* sv = td_vec_new(TD_I64, 0); if (!sv || TD_IS_ERR(sv)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
