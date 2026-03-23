@@ -330,10 +330,10 @@ git commit -m "feat: betweenness centrality — Brandes algorithm with optional 
 
 ### Task 3: Closeness centrality — C kernel + test
 
-- [ ] Write failing test (test_closeness)
-- [ ] Implement DAG constructor td_closeness in graph.c
-- [ ] Implement exec_closeness kernel in exec.c
-- [ ] Tests pass
+- [x] Write failing test (test_closeness)
+- [x] Implement DAG constructor td_closeness in graph.c
+- [x] Implement exec_closeness kernel in exec.c
+- [x] Tests pass
 
 BFS from each source, sum distances. `closeness[v] = (n-1) / sum_dist[v]`.
 

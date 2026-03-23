@@ -2663,6 +2663,45 @@ static MunitResult test_betweenness_sampled(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+static MunitResult test_closeness(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    td_t* edges = make_edge_table();  /* 4-node cycle */
+    td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
+
+    td_t* tbl = td_table_new(1);
+    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6),
+                           td_vec_from_raw(TD_I64, (int64_t[]){0}, 1));
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* cc = td_closeness(g, rel, 0);  /* exact */
+    td_t* result = td_execute(g, cc);
+    munit_assert_ptr_not_null(result);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(td_table_nrows(result), ==, 4);
+
+    int64_t cent_sym = td_sym_intern("_centrality", 11);
+    td_t* cent_col = td_table_get_col(result, cent_sym);
+    double* cents = (double*)td_data(cent_col);
+
+    /* All nodes should have positive closeness in a connected graph */
+    for (int i = 0; i < 4; i++) {
+        munit_assert_double(cents[i], >, 0.0);
+        munit_assert_double(cents[i], <=, 1.0);
+    }
+
+    td_release(result);
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* --------------------------------------------------------------------------
  * Suite definition
  * -------------------------------------------------------------------------- */
@@ -2721,6 +2760,7 @@ static MunitTest csr_tests[] = {
     { "/k_shortest",   test_k_shortest,             NULL, NULL, 0, NULL },
     { "/betweenness",  test_betweenness,            NULL, NULL, 0, NULL },
     { "/betweenness_s", test_betweenness_sampled,   NULL, NULL, 0, NULL },
+    { "/closeness",    test_closeness,             NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },  /* terminator */
 };
 
