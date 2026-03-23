@@ -836,8 +836,9 @@ td_t* td_vec_concat(td_t* a, td_t* b);
 td_t* td_vec_from_raw(int8_t type, const void* data, int64_t count);
 
 /* Null bitmap ops */
-void  td_vec_set_null(td_t* vec, int64_t idx, bool is_null);
-bool  td_vec_is_null(td_t* vec, int64_t idx);
+void     td_vec_set_null(td_t* vec, int64_t idx, bool is_null);
+td_err_t td_vec_set_null_checked(td_t* vec, int64_t idx, bool is_null);
+bool     td_vec_is_null(td_t* vec, int64_t idx);
 
 /* ===== String Vector API ===== */
 
