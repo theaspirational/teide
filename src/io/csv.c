@@ -1312,8 +1312,13 @@ td_t* td_read_csv_opts(const char* path, char delimiter, bool header,
 
     /* ---- 9b. Batch-intern string columns ---- */
     if (has_str_cols) {
-        csv_intern_strings(str_ref_bufs, ncols, parse_types,
+        bool intern_ok = csv_intern_strings(str_ref_bufs, ncols, parse_types,
                            col_data, n_rows, sym_max_ids, col_nullmaps);
+        if (!intern_ok) {
+            for (int c = 0; c < ncols; c++) scratch_free(str_ref_hdrs[c]);
+            for (int c = 0; c < ncols; c++) td_release(col_vecs[c]);
+            goto fail_offsets;
+        }
     }
 
     /* Free strref buffers */
