@@ -416,10 +416,10 @@ git commit -m "feat: closeness centrality — BFS distance sums with optional sa
 
 ### Task 4: MST (Kruskal) — C kernel + test
 
-- [ ] Write failing test (test_mst)
-- [ ] Implement DAG constructor td_mst in graph.c
-- [ ] Implement exec_mst kernel in exec.c
-- [ ] Tests pass
+- [x] Write failing test (test_mst)
+- [x] Implement DAG constructor td_mst in graph.c
+- [x] Implement exec_mst kernel in exec.c
+- [x] Tests pass
 
 Collect weighted edges, sort by weight, union-find to build forest.
 

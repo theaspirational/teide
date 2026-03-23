@@ -2702,6 +2702,53 @@ static MunitResult test_closeness(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+static MunitResult test_mst(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    td_t* edges; td_rel_t* rel; td_t* node_props;
+    make_astar_graph(&edges, &rel, &node_props);
+    /* 5 nodes, 6 edges: 0->1(1), 0->2(4), 1->3(2), 2->3(1), 3->4(3), 1->4(10)
+     * MST (undirected) should pick: 0-1(1), 2-3(1), 1-3(2), 3-4(3) = total 7
+     * (skip 0-2(4) and 1-4(10)) */
+
+    td_t* tbl = td_table_new(1);
+    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6),
+                           td_vec_from_raw(TD_I64, (int64_t[]){0}, 1));
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* mst = td_mst(g, rel, "weight");
+    munit_assert_ptr_not_null(mst);
+
+    td_t* result = td_execute(g, mst);
+    munit_assert_ptr_not_null(result);
+    munit_assert_false(TD_IS_ERR(result));
+
+    /* MST of 5 nodes has 4 edges */
+    munit_assert_int(td_table_nrows(result), ==, 4);
+
+    /* Total weight should be 7.0 */
+    int64_t w_sym = td_sym_intern("_weight", 7);
+    td_t* w_col = td_table_get_col(result, w_sym);
+    munit_assert_ptr_not_null(w_col);
+    double* ws = (double*)td_data(w_col);
+    double total = 0.0;
+    for (int i = 0; i < 4; i++) total += ws[i];
+    munit_assert_double(total, >=, 6.99);
+    munit_assert_double(total, <=, 7.01);
+
+    td_release(result);
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(node_props);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* --------------------------------------------------------------------------
  * Suite definition
  * -------------------------------------------------------------------------- */
@@ -2761,6 +2808,7 @@ static MunitTest csr_tests[] = {
     { "/betweenness",  test_betweenness,            NULL, NULL, 0, NULL },
     { "/betweenness_s", test_betweenness_sampled,   NULL, NULL, 0, NULL },
     { "/closeness",    test_closeness,             NULL, NULL, 0, NULL },
+    { "/mst",          test_mst,                   NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },  /* terminator */
 };
 
