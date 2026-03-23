@@ -2008,8 +2008,9 @@ static MunitResult test_degree_cent(const void* params, void* data) {
     td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
 
     td_t* tbl = td_table_new(1);
-    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6),
-                           td_vec_from_raw(TD_I64, (int64_t[]){0}, 1));
+    td_t* dummy_vec = td_vec_from_raw(TD_I64, (int64_t[]){0}, 1);
+    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6), dummy_vec);
+    td_release(dummy_vec);
     td_graph_t* g = td_graph_new(tbl);
 
     td_op_t* dc = td_degree_cent(g, rel);
@@ -2097,8 +2098,9 @@ static MunitResult test_topsort(const void* params, void* data) {
     td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
 
     td_t* tbl = td_table_new(1);
-    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6),
-                           td_vec_from_raw(TD_I64, (int64_t[]){0}, 1));
+    td_t* dummy_vec = td_vec_from_raw(TD_I64, (int64_t[]){0}, 1);
+    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6), dummy_vec);
+    td_release(dummy_vec);
     td_graph_t* g = td_graph_new(tbl);
 
     td_op_t* ts = td_topsort(g, rel);
@@ -2149,8 +2151,9 @@ static MunitResult test_topsort_cycle(const void* params, void* data) {
     td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
 
     td_t* tbl = td_table_new(1);
-    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6),
-                           td_vec_from_raw(TD_I64, (int64_t[]){0}, 1));
+    td_t* dummy_vec = td_vec_from_raw(TD_I64, (int64_t[]){0}, 1);
+    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6), dummy_vec);
+    td_release(dummy_vec);
     td_graph_t* g = td_graph_new(tbl);
 
     td_op_t* ts = td_topsort(g, rel);
@@ -2304,8 +2307,9 @@ static MunitResult test_cluster_coeff(const void* params, void* data) {
     td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
 
     td_t* tbl = td_table_new(1);
-    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6),
-                           td_vec_from_raw(TD_I64, (int64_t[]){0}, 1));
+    td_t* dummy_vec = td_vec_from_raw(TD_I64, (int64_t[]){0}, 1);
+    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6), dummy_vec);
+    td_release(dummy_vec);
     td_graph_t* g = td_graph_new(tbl);
 
     td_op_t* cc = td_cluster_coeff(g, rel);
