@@ -13588,9 +13588,18 @@ static td_t* exec_k_shortest(td_graph_t* g, td_op_t* op,
             if (result) td_release(result);
             return TD_ERR_PTR(TD_ERR_OOM);
         }
-        result = td_table_add_col(result, td_sym_intern("_path_id", 8), pv); td_release(pv);
-        result = td_table_add_col(result, td_sym_intern("_node", 5), nv); td_release(nv);
-        result = td_table_add_col(result, td_sym_intern("_dist", 5), dv); td_release(dv);
+        td_t* tmp = td_table_add_col(result, td_sym_intern("_path_id", 8), pv);
+        td_release(pv);
+        if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(nv); td_release(dv); return TD_ERR_PTR(TD_ERR_OOM); }
+        result = tmp;
+        tmp = td_table_add_col(result, td_sym_intern("_node", 5), nv);
+        td_release(nv);
+        if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(dv); return TD_ERR_PTR(TD_ERR_OOM); }
+        result = tmp;
+        tmp = td_table_add_col(result, td_sym_intern("_dist", 5), dv);
+        td_release(dv);
+        if (!tmp || TD_IS_ERR(tmp)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
+        result = tmp;
         return result;
     }
 
@@ -14252,6 +14261,7 @@ static td_t* exec_cluster_coeff(td_graph_t* g, td_op_t* op) {
         int64_t d = (fwd_off[i+1]-fwd_off[i]) + (rev_off[i+1]-rev_off[i]);
         if (d > max_deg) max_deg = d;
     }
+    if (max_deg == 0) max_deg = 1;
     int64_t* nbrs = (int64_t*)td_scratch_arena_push(&arena, (size_t)max_deg * sizeof(int64_t));
     if (!nbr_set || !nbrs) {
         td_scratch_arena_reset(&arena);
