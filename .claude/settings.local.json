@@ -36,7 +36,14 @@
       "Bash(sort -t'\\(' -k2 -rn)",
       "WebFetch(domain:duckdb.org)",
       "WebFetch(domain:15721.courses.cs.cmu.edu)",
-      "WebFetch(domain:endjin.com)"
+      "WebFetch(domain:endjin.com)",
+      "Bash(./test_teide --suite /str 2>&1)",
+      "Bash(cmake --build .)",
+      "Bash(./build/test_teide --suite /str 2>&1)",
+      "Bash(./build/test_teide --suite /exec)",
+      "Bash(./build/test_teide)",
+      "WebFetch(domain:www.cozodb.org)",
+      "WebFetch(domain:docs.cozodb.org)"
     ]
   },
   "enableAllProjectMcpServers": true,
