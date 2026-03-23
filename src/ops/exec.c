@@ -81,6 +81,14 @@ static inline void scratch_free(td_t* hdr) {
     td_free(hdr);
 }
 
+/* Safe sym intern for constant column names in graph algorithm result tables.
+ * Column name interning should never fail for short constant strings unless
+ * td_sym_init failed; fall back to 0 (empty string ID) on failure. */
+static inline int64_t sym_intern_safe(const char* s, size_t len) {
+    int64_t id = td_sym_intern(s, len);
+    return id >= 0 ? id : 0;
+}
+
 /* --------------------------------------------------------------------------
  * Unified column read/write helpers
  *
@@ -6714,11 +6722,11 @@ static td_t* exec_group(td_graph_t* g, td_op_t* op, td_t* tbl,
      * (_src, _count) columns, and GROUP BY _src with COUNT/SUM(_count),
      * return the pre-aggregated table directly without re-scanning. */
     if (n_keys == 1 && n_aggs > 0 && nrows > 0) {
-        int64_t cnt_sym = td_sym_intern("_count", 6);
+        int64_t cnt_sym = sym_intern_safe("_count", 6);
         td_t* cnt_col = td_table_get_col(tbl, cnt_sym);
         if (cnt_col && cnt_col->type == TD_I64) {
             td_op_ext_t* key_ext = find_ext(g, ext->keys[0]->id);
-            int64_t src_sym = td_sym_intern("_src", 4);
+            int64_t src_sym = sym_intern_safe("_src", 4);
             if (key_ext && key_ext->base.opcode == OP_SCAN &&
                 key_ext->sym == src_sym) {
                 /* Verify all aggs are compatible with factorized data:
@@ -6755,7 +6763,7 @@ static td_t* exec_group(td_graph_t* g, td_op_t* op, td_t* tbl,
                         result = tmp_r;
                         for (uint8_t a = 0; a < n_aggs; a++) {
                             td_retain(cnt_col);
-                            int64_t agg_name = td_sym_intern("_agg", 4);
+                            int64_t agg_name = sym_intern_safe("_agg", 4);
                             if (n_aggs > 1) {
                                 char buf[16];
                                 int n = snprintf(buf, sizeof(buf), "_agg%d", a);
@@ -9596,7 +9604,7 @@ chained_ht_fallback:;
     int64_t asp_key_max = 0;
     if (n_keys == 1 && join_type == 0 && l_key_vecs[0] &&
         l_key_vecs[0]->type == TD_I64 && right_rows > left_rows * 2) {
-        int64_t cnt_sym = td_sym_intern("_count", 6);
+        int64_t cnt_sym = sym_intern_safe("_count", 6);
         td_t* cnt_col = td_table_get_col(left_table, cnt_sym);
         if (cnt_col) {  /* left is factorized */
             int64_t* lk = (int64_t*)td_data(l_key_vecs[0]);
@@ -12379,8 +12387,8 @@ static td_t* exec_expand_factorized(td_rel_t* rel, uint8_t direction, td_t* src_
     out_src->len = out_len;
     out_cnt->len = out_len;
 
-    int64_t src_sym = td_sym_intern("_src", 4);
-    int64_t cnt_sym = td_sym_intern("_count", 6);
+    int64_t src_sym = sym_intern_safe("_src", 4);
+    int64_t cnt_sym = sym_intern_safe("_count", 6);
     td_t* result = td_table_new(2);
     if (!result || TD_IS_ERR(result)) {
         td_release(out_src); td_release(out_cnt);
@@ -12492,8 +12500,8 @@ static td_t* exec_expand(td_graph_t* g, td_op_t* op, td_t* src_vec) {
             } \
         } \
         /* Build result table */ \
-        int64_t src_sym = td_sym_intern("_src", 4); \
-        int64_t dst_sym = td_sym_intern("_dst", 4); \
+        int64_t src_sym = sym_intern_safe("_src", 4); \
+        int64_t dst_sym = sym_intern_safe("_dst", 4); \
         td_t* result = td_table_new(2); \
         if (!result || TD_IS_ERR(result)) { \
             td_release(d_src); td_release(d_dst); \
@@ -12575,8 +12583,8 @@ static td_t* exec_expand(td_graph_t* g, td_op_t* op, td_t* src_vec) {
             }
         }
 
-        int64_t src_sym = td_sym_intern("_src", 4);
-        int64_t dst_sym = td_sym_intern("_dst", 4);
+        int64_t src_sym = sym_intern_safe("_src", 4);
+        int64_t dst_sym = sym_intern_safe("_dst", 4);
         td_t* result = td_table_new(2);
         if (!result || TD_IS_ERR(result)) {
             td_release(d_src); td_release(d_dst);
@@ -12746,9 +12754,9 @@ cleanup:;
         return TD_ERR_PTR(TD_ERR_OOM);
     }
 
-    int64_t start_sym = td_sym_intern("_start", 6);
-    int64_t end_sym   = td_sym_intern("_end", 4);
-    int64_t depth_sym = td_sym_intern("_depth", 6);
+    int64_t start_sym = sym_intern_safe("_start", 6);
+    int64_t end_sym   = sym_intern_safe("_end", 4);
+    int64_t depth_sym = sym_intern_safe("_depth", 6);
 
     td_t* result = td_table_new(3);
     if (!result || TD_IS_ERR(result)) {
@@ -12817,10 +12825,10 @@ static td_t* exec_shortest_path(td_graph_t* g, td_op_t* op,
         }
         td_t* result = td_table_new(2);
         if (!result || TD_IS_ERR(result)) { td_release(v_node); td_release(v_depth); return TD_ERR_PTR(TD_ERR_OOM); }
-        td_t* tmp = td_table_add_col(result, td_sym_intern("_node", 5), v_node);
+        td_t* tmp = td_table_add_col(result, sym_intern_safe("_node", 5), v_node);
         if (!tmp || TD_IS_ERR(tmp)) { td_release(v_node); td_release(v_depth); td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
         result = tmp;
-        tmp = td_table_add_col(result, td_sym_intern("_depth", 6), v_depth);
+        tmp = td_table_add_col(result, sym_intern_safe("_depth", 6), v_depth);
         if (!tmp || TD_IS_ERR(tmp)) { td_release(v_node); td_release(v_depth); td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
         result = tmp;
         td_release(v_node); td_release(v_depth);
@@ -12918,8 +12926,8 @@ bfs_done:
     int64_t* dep_data = (int64_t*)td_data(v_depth);
     for (int64_t i = 0; i < path_len; i++) dep_data[i] = i;
 
-    int64_t node_sym  = td_sym_intern("_node", 5);
-    int64_t depth_sym = td_sym_intern("_depth", 6);
+    int64_t node_sym  = sym_intern_safe("_node", 5);
+    int64_t depth_sym = sym_intern_safe("_depth", 6);
     td_t* result = td_table_new(2);
     if (!result || TD_IS_ERR(result)) { td_release(v_node); td_release(v_depth); return TD_ERR_PTR(TD_ERR_OOM); }
     td_t* tmp = td_table_add_col(result, node_sym, v_node);
@@ -13030,9 +13038,9 @@ static td_t* exec_pagerank(td_graph_t* g, td_op_t* op) {
         td_release(rank_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    result = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
-    result = td_table_add_col(result, td_sym_intern("_rank", 5), rank_vec);
+    result = td_table_add_col(result, sym_intern_safe("_rank", 5), rank_vec);
     td_release(rank_vec);
 
     return result;
@@ -13121,9 +13129,9 @@ static td_t* exec_connected_comp(td_graph_t* g, td_op_t* op) {
         td_release(comp_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    result = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
-    result = td_table_add_col(result, td_sym_intern("_component", 10), comp_vec);
+    result = td_table_add_col(result, sym_intern_safe("_component", 10), comp_vec);
     td_release(comp_vec);
 
     return result;
@@ -13355,11 +13363,11 @@ static td_t* exec_dijkstra(td_graph_t* g, td_op_t* op,
         td_release(depth_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    result = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
-    result = td_table_add_col(result, td_sym_intern("_dist", 5), dist_vec);
+    result = td_table_add_col(result, sym_intern_safe("_dist", 5), dist_vec);
     td_release(dist_vec);
-    result = td_table_add_col(result, td_sym_intern("_depth", 6), depth_vec);
+    result = td_table_add_col(result, sym_intern_safe("_depth", 6), depth_vec);
     td_release(depth_vec);
 
     return result;
@@ -13504,15 +13512,15 @@ static td_t* exec_astar(td_graph_t* g, td_op_t* op,
         td_release(depth_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    td_t* tmp = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_t* tmp = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(dist_vec); td_release(depth_vec); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
-    tmp = td_table_add_col(result, td_sym_intern("_dist", 5), dist_vec);
+    tmp = td_table_add_col(result, sym_intern_safe("_dist", 5), dist_vec);
     td_release(dist_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(depth_vec); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
-    tmp = td_table_add_col(result, td_sym_intern("_depth", 6), depth_vec);
+    tmp = td_table_add_col(result, sym_intern_safe("_depth", 6), depth_vec);
     td_release(depth_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
@@ -13605,15 +13613,15 @@ static td_t* exec_k_shortest(td_graph_t* g, td_op_t* op,
             if (result) td_release(result);
             return TD_ERR_PTR(TD_ERR_OOM);
         }
-        td_t* tmp = td_table_add_col(result, td_sym_intern("_path_id", 8), pv);
+        td_t* tmp = td_table_add_col(result, sym_intern_safe("_path_id", 8), pv);
         td_release(pv);
         if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(nv); td_release(dv); return TD_ERR_PTR(TD_ERR_OOM); }
         result = tmp;
-        tmp = td_table_add_col(result, td_sym_intern("_node", 5), nv);
+        tmp = td_table_add_col(result, sym_intern_safe("_node", 5), nv);
         td_release(nv);
         if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(dv); return TD_ERR_PTR(TD_ERR_OOM); }
         result = tmp;
-        tmp = td_table_add_col(result, td_sym_intern("_dist", 5), dv);
+        tmp = td_table_add_col(result, sym_intern_safe("_dist", 5), dv);
         td_release(dv);
         if (!tmp || TD_IS_ERR(tmp)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
         result = tmp;
@@ -13824,15 +13832,15 @@ static td_t* exec_k_shortest(td_graph_t* g, td_op_t* op,
         td_release(pid_vec); td_release(node_vec); td_release(dist_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    td_t* tmp = td_table_add_col(result, td_sym_intern("_path_id", 8), pid_vec);
+    td_t* tmp = td_table_add_col(result, sym_intern_safe("_path_id", 8), pid_vec);
     td_release(pid_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(node_vec); td_release(dist_vec); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
-    tmp = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    tmp = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(dist_vec); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
-    tmp = td_table_add_col(result, td_sym_intern("_dist", 5), dist_vec);
+    tmp = td_table_add_col(result, sym_intern_safe("_dist", 5), dist_vec);
     td_release(dist_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
@@ -14083,9 +14091,9 @@ static td_t* exec_louvain(td_graph_t* g, td_op_t* op) {
         td_release(comm_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    result = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
-    result = td_table_add_col(result, td_sym_intern("_community", 10), comm_vec);
+    result = td_table_add_col(result, sym_intern_safe("_community", 10), comm_vec);
     td_release(comm_vec);
 
     return result;
@@ -14144,13 +14152,13 @@ static td_t* exec_degree_cent(td_graph_t* g, td_op_t* op) {
         td_release(out_vec);  td_release(deg_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    result = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
-    result = td_table_add_col(result, td_sym_intern("_in_degree", 10), in_vec);
+    result = td_table_add_col(result, sym_intern_safe("_in_degree", 10), in_vec);
     td_release(in_vec);
-    result = td_table_add_col(result, td_sym_intern("_out_degree", 11), out_vec);
+    result = td_table_add_col(result, sym_intern_safe("_out_degree", 11), out_vec);
     td_release(out_vec);
-    result = td_table_add_col(result, td_sym_intern("_degree", 7), deg_vec);
+    result = td_table_add_col(result, sym_intern_safe("_degree", 7), deg_vec);
     td_release(deg_vec);
 
     return result;
@@ -14241,9 +14249,9 @@ static td_t* exec_topsort(td_graph_t* g, td_op_t* op) {
         td_release(node_vec); td_release(order_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    result = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
-    result = td_table_add_col(result, td_sym_intern("_order", 6), order_vec);
+    result = td_table_add_col(result, sym_intern_safe("_order", 6), order_vec);
     td_release(order_vec);
 
     return result;
@@ -14343,11 +14351,11 @@ static td_t* exec_cluster_coeff(td_graph_t* g, td_op_t* op) {
         td_release(node_vec); td_release(coeff_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    td_t* tmp = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_t* tmp = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(coeff_vec); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
-    tmp = td_table_add_col(result, td_sym_intern("_coefficient", 12), coeff_vec);
+    tmp = td_table_add_col(result, sym_intern_safe("_coefficient", 12), coeff_vec);
     td_release(coeff_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
@@ -14528,11 +14536,11 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
         td_release(node_vec); td_release(cent_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    td_t* tmp = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_t* tmp = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(cent_vec); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
-    tmp = td_table_add_col(result, td_sym_intern("_centrality", 11), cent_vec);
+    tmp = td_table_add_col(result, sym_intern_safe("_centrality", 11), cent_vec);
     td_release(cent_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
@@ -14653,11 +14661,11 @@ static td_t* exec_closeness(td_graph_t* g, td_op_t* op) {
         td_release(node_vec); td_release(cent_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    td_t* tmp = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_t* tmp = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(cent_vec); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
-    tmp = td_table_add_col(result, td_sym_intern("_centrality", 11), cent_vec);
+    tmp = td_table_add_col(result, sym_intern_safe("_centrality", 11), cent_vec);
     td_release(cent_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
@@ -14714,13 +14722,13 @@ static td_t* exec_mst(td_graph_t* g, td_op_t* op) {
         dv->len = 0;
         td_t* wv = td_vec_new(TD_F64, 0); if (!wv || TD_IS_ERR(wv)) { td_release(result); td_release(sv); td_release(dv); return TD_ERR_PTR(TD_ERR_OOM); }
         wv->len = 0;
-        td_t* tmp = td_table_add_col(result, td_sym_intern("_src", 4), sv); td_release(sv);
+        td_t* tmp = td_table_add_col(result, sym_intern_safe("_src", 4), sv); td_release(sv);
         if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(dv); td_release(wv); return TD_ERR_PTR(TD_ERR_OOM); }
         result = tmp;
-        tmp = td_table_add_col(result, td_sym_intern("_dst", 4), dv); td_release(dv);
+        tmp = td_table_add_col(result, sym_intern_safe("_dst", 4), dv); td_release(dv);
         if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(wv); return TD_ERR_PTR(TD_ERR_OOM); }
         result = tmp;
-        tmp = td_table_add_col(result, td_sym_intern("_weight", 7), wv); td_release(wv);
+        tmp = td_table_add_col(result, sym_intern_safe("_weight", 7), wv); td_release(wv);
         if (!tmp || TD_IS_ERR(tmp)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
         return tmp;
     }
@@ -14803,15 +14811,15 @@ static td_t* exec_mst(td_graph_t* g, td_op_t* op) {
         td_release(src_vec); td_release(dst_vec); td_release(wt_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    td_t* tmp = td_table_add_col(result, td_sym_intern("_src", 4), src_vec);
+    td_t* tmp = td_table_add_col(result, sym_intern_safe("_src", 4), src_vec);
     td_release(src_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(dst_vec); td_release(wt_vec); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
-    tmp = td_table_add_col(result, td_sym_intern("_dst", 4), dst_vec);
+    tmp = td_table_add_col(result, sym_intern_safe("_dst", 4), dst_vec);
     td_release(dst_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(wt_vec); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
-    tmp = td_table_add_col(result, td_sym_intern("_weight", 7), wt_vec);
+    tmp = td_table_add_col(result, sym_intern_safe("_weight", 7), wt_vec);
     td_release(wt_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
     return tmp;
@@ -14880,11 +14888,11 @@ static td_t* exec_random_walk(td_graph_t* g, td_op_t* op, td_t* src_val) {
         td_release(step_vec); td_release(node_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    td_t* tmp = td_table_add_col(result, td_sym_intern("_step", 5), step_vec);
+    td_t* tmp = td_table_add_col(result, sym_intern_safe("_step", 5), step_vec);
     td_release(step_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); td_release(node_vec); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
-    tmp = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    tmp = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
     if (!tmp || TD_IS_ERR(tmp)) { td_release(result); return TD_ERR_PTR(TD_ERR_OOM); }
     result = tmp;
@@ -15006,11 +15014,11 @@ static td_t* exec_dfs(td_graph_t* g, td_op_t* op, td_t* src_val) {
         td_release(node_vec); td_release(depth_vec); td_release(parent_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    result = td_table_add_col(result, sym_intern_safe("_node", 5), node_vec);
     td_release(node_vec);
-    result = td_table_add_col(result, td_sym_intern("_depth", 6), depth_vec);
+    result = td_table_add_col(result, sym_intern_safe("_depth", 6), depth_vec);
     td_release(depth_vec);
-    result = td_table_add_col(result, td_sym_intern("_parent", 7), parent_vec);
+    result = td_table_add_col(result, sym_intern_safe("_parent", 7), parent_vec);
     td_release(parent_vec);
 
     return result;
@@ -15226,9 +15234,9 @@ static td_t* exec_knn(td_graph_t* g, td_op_t* op, td_t* emb_vec) {
         td_release(sim_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    result = td_table_add_col(result, td_sym_intern("_rowid", 6), rowid_vec);
+    result = td_table_add_col(result, sym_intern_safe("_rowid", 6), rowid_vec);
     td_release(rowid_vec);
-    result = td_table_add_col(result, td_sym_intern("_similarity", 11), sim_vec);
+    result = td_table_add_col(result, sym_intern_safe("_similarity", 11), sim_vec);
     td_release(sim_vec);
 
     return result;
@@ -15286,9 +15294,9 @@ static td_t* exec_hnsw_knn(td_graph_t* g, td_op_t* op) {
         td_release(sim_vec);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
-    result = td_table_add_col(result, td_sym_intern("_rowid", 6), rowid_vec);
+    result = td_table_add_col(result, sym_intern_safe("_rowid", 6), rowid_vec);
     td_release(rowid_vec);
-    result = td_table_add_col(result, td_sym_intern("_similarity", 11), sim_vec);
+    result = td_table_add_col(result, sym_intern_safe("_similarity", 11), sim_vec);
     td_release(sim_vec);
 
     return result;
@@ -15509,7 +15517,7 @@ static td_t* exec_node(td_graph_t* g, td_op_t* op) {
                 td_op_ext_t* gext = find_ext(g, op->id);
                 if (gext && gext->n_keys == 1) {
                     td_op_ext_t* kx = find_ext(g, gext->keys[0]->id);
-                    int64_t src_sym = td_sym_intern("_src", 4);
+                    int64_t src_sym = sym_intern_safe("_src", 4);
                     if (kx && kx->base.opcode == OP_SCAN && kx->sym == src_sym) {
                         /* Find the factorized OP_EXPAND connected to this GROUP.
                          * The expand must be the one whose output the GROUP
