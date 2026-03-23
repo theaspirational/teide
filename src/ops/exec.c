@@ -13805,6 +13805,76 @@ static td_t* exec_cluster_coeff(td_graph_t* g, td_op_t* op) {
 }
 
 /* --------------------------------------------------------------------------
+ * exec_random_walk: random walk from source node using xorshift64 PRNG.
+ * -------------------------------------------------------------------------- */
+static td_t* exec_random_walk(td_graph_t* g, td_op_t* op, td_t* src_val) {
+    td_op_ext_t* ext = find_ext(g, op->id);
+    if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
+    td_rel_t* rel = (td_rel_t*)ext->graph.rel;
+    if (!rel) return TD_ERR_PTR(TD_ERR_SCHEMA);
+
+    int64_t n = rel->fwd.n_nodes;
+    uint16_t walk_len = ext->graph.max_iter;
+    if (n <= 0) return TD_ERR_PTR(TD_ERR_LENGTH);
+
+    int64_t start_node;
+    if (td_is_atom(src_val)) {
+        start_node = src_val->i64;
+    } else {
+        start_node = ((int64_t*)td_data(src_val))[0];
+    }
+    if (start_node < 0 || start_node >= n) return TD_ERR_PTR(TD_ERR_RANGE);
+
+    int64_t* fwd_off = (int64_t*)td_data(rel->fwd.offsets);
+    int64_t* fwd_tgt = (int64_t*)td_data(rel->fwd.targets);
+
+    int64_t total = (int64_t)walk_len + 1;
+    td_t* step_vec = td_vec_new(TD_I64, total);
+    td_t* node_vec = td_vec_new(TD_I64, total);
+    if (!step_vec || TD_IS_ERR(step_vec) || !node_vec || TD_IS_ERR(node_vec)) {
+        if (step_vec && !TD_IS_ERR(step_vec)) td_release(step_vec);
+        if (node_vec && !TD_IS_ERR(node_vec)) td_release(node_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+
+    int64_t* sdata = (int64_t*)td_data(step_vec);
+    int64_t* ndata = (int64_t*)td_data(node_vec);
+
+    /* xorshift64 PRNG seeded from source node */
+    uint64_t rng = (uint64_t)start_node * 6364136223846793005ULL + 1442695040888963407ULL;
+    if (rng == 0) rng = 1;
+
+    int64_t current = start_node;
+    int64_t count = 0;
+    for (int64_t i = 0; i < total; i++) {
+        sdata[i] = i;
+        ndata[i] = current;
+        count++;
+        if (i < walk_len) {
+            int64_t deg = fwd_off[current + 1] - fwd_off[current];
+            if (deg == 0) break;  /* dead end */
+            rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+            int64_t pick = (int64_t)(rng % (uint64_t)deg);
+            current = fwd_tgt[fwd_off[current] + pick];
+        }
+    }
+
+    step_vec->len = count;
+    node_vec->len = count;
+
+    td_t* result = td_table_new(2);
+    if (!result || TD_IS_ERR(result)) {
+        td_release(step_vec); td_release(node_vec);
+        return TD_ERR_PTR(TD_ERR_OOM);
+    }
+    result = td_table_add_col(result, td_sym_intern("_step", 5), step_vec);
+    td_release(step_vec);
+    result = td_table_add_col(result, td_sym_intern("_node", 5), node_vec);
+    td_release(node_vec);
+    return result;
+}
+
+/* --------------------------------------------------------------------------
  * exec_dfs: depth-first search from source node. O(n+m).
  * -------------------------------------------------------------------------- */
 static td_t* exec_dfs(td_graph_t* g, td_op_t* op, td_t* src_val) {
@@ -14966,6 +15036,14 @@ static td_t* exec_node(td_graph_t* g, td_op_t* op) {
 
         case OP_CLUSTER_COEFF: {
             return exec_cluster_coeff(g, op);
+        }
+
+        case OP_RANDOM_WALK: {
+            td_t* src = exec_node(g, op->inputs[0]);
+            if (!src || TD_IS_ERR(src)) return src;
+            td_t* result = exec_random_walk(g, op, src);
+            td_release(src);
+            return result;
         }
 
         case OP_COSINE_SIM: {

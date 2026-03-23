@@ -2337,6 +2337,65 @@ static MunitResult test_cluster_coeff(const void* params, void* data) {
 }
 
 /* --------------------------------------------------------------------------
+ * Test: Random walk
+ * -------------------------------------------------------------------------- */
+
+static MunitResult test_random_walk(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    td_t* edges = make_edge_table();
+    td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
+
+    td_t* src_tbl = td_table_new(1);
+    td_t* src_vec = td_vec_from_raw(TD_I64, (int64_t[]){0}, 1);
+    src_tbl = td_table_add_col(src_tbl, td_sym_intern("src", 3), src_vec);
+    td_release(src_vec);
+
+    td_graph_t* g = td_graph_new(src_tbl);
+    td_op_t* src_op = td_scan(g, "src");
+    td_op_t* rw = td_random_walk(g, src_op, rel, 10);
+    munit_assert_ptr_not_null(rw);
+
+    td_t* result = td_execute(g, rw);
+    munit_assert_ptr_not_null(result);
+    munit_assert_false(TD_IS_ERR(result));
+
+    /* Should have 11 rows (start + 10 steps) */
+    munit_assert_int(td_table_nrows(result), ==, 11);
+
+    /* First node should be source (0) */
+    int64_t node_sym = td_sym_intern("_node", 5);
+    td_t* node_col = td_table_get_col(result, node_sym);
+    int64_t* nodes = (int64_t*)td_data(node_col);
+    munit_assert_int(nodes[0], ==, 0);
+
+    /* All nodes should be valid (0..3) */
+    for (int i = 0; i < 11; i++) {
+        munit_assert(nodes[i] >= 0);
+        munit_assert(nodes[i] < 4);
+    }
+
+    /* Step column should be 0..10 */
+    int64_t step_sym = td_sym_intern("_step", 5);
+    td_t* step_col = td_table_get_col(result, step_sym);
+    int64_t* steps = (int64_t*)td_data(step_col);
+    for (int i = 0; i < 11; i++) {
+        munit_assert_int(steps[i], ==, i);
+    }
+
+    td_release(result);
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(src_tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* --------------------------------------------------------------------------
  * Suite definition
  * -------------------------------------------------------------------------- */
 
@@ -2389,6 +2448,7 @@ static MunitTest csr_tests[] = {
     { "/dfs",             test_dfs,                    NULL, NULL, 0, NULL },
     { "/dfs_max_depth",   test_dfs_max_depth,          NULL, NULL, 0, NULL },
     { "/cluster_coeff",  test_cluster_coeff,          NULL, NULL, 0, NULL },
+    { "/random_walk",   test_random_walk,            NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },  /* terminator */
 };
 

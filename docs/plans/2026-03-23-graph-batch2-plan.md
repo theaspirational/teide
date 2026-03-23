@@ -274,9 +274,9 @@ git commit -m "feat: clustering coefficients — triangle counting with neighbor
 
 ### Task 3: Random walk — C kernel + test
 
-- [ ] Write failing test
-- [ ] Implement DAG constructor and executor kernel
-- [ ] Tests pass
+- [x] Write failing test
+- [x] Implement DAG constructor and executor kernel
+- [x] Tests pass
 
 **Files:**
 - Modify: `src/ops/graph.c`, `src/ops/exec.c`

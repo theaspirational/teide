@@ -1393,6 +1393,25 @@ td_op_t* td_cluster_coeff(td_graph_t* g, td_rel_t* rel) {
     return &g->nodes[ext->base.id];
 }
 
+td_op_t* td_random_walk(td_graph_t* g, td_op_t* src, td_rel_t* rel,
+                        uint16_t walk_length) {
+    if (!g || !src || !rel) return NULL;
+    td_op_ext_t* ext = graph_alloc_ext_node(g);
+    if (!ext) return NULL;
+    uint32_t src_id = src->id;
+    src = &g->nodes[src_id];
+    ext->base.opcode    = OP_RANDOM_WALK;
+    ext->base.arity     = 1;
+    ext->base.inputs[0] = src;
+    ext->base.out_type  = TD_TABLE;
+    ext->base.est_rows  = walk_length + 1;
+    ext->graph.rel      = rel;
+    ext->graph.max_iter = walk_length;
+    ext->graph.direction = 0;
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}
+
 td_op_t* td_hnsw_knn(td_graph_t* g, td_hnsw_t* idx,
                        const float* query_vec, int32_t dim,
                        int64_t k, int32_t ef_search) {
