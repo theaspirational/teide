@@ -14376,14 +14376,18 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
     int64_t* pred_data   = (int64_t*)td_scratch_arena_push(&arena, (size_t)m_total * sizeof(int64_t));
     int64_t* pred_off    = (int64_t*)td_scratch_arena_push(&arena, (size_t)(n + 1) * sizeof(int64_t));
     int64_t* pred_cursor = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
+    /* Per-v dedup marker: tracks which neighbors were already counted via fwd edges
+     * to avoid double-counting sigma/predecessors for bidirectional edges. */
+    int64_t* seen_epoch  = (int64_t*)td_scratch_arena_push(&arena, (size_t)n * sizeof(int64_t));
 
     if (!cb || !sigma || !delta || !dist || !queue || !stack ||
-        !pred_data || !pred_off || !pred_cursor) {
+        !pred_data || !pred_off || !pred_cursor || !seen_epoch) {
         td_scratch_arena_reset(&arena);
         return TD_ERR_PTR(TD_ERR_OOM);
     }
 
     memset(cb, 0, (size_t)n * sizeof(double));
+    memset(seen_epoch, 0, (size_t)n * sizeof(int64_t));
 
     int64_t stride = (sample > 0 && (int64_t)sample < n) ? (n / n_sources) : 1;
 
@@ -14405,9 +14409,14 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
         int64_t stack_top = 0;
         queue[q_tail++] = s;
 
+        /* Use epoch counter to deduplicate: for each v popped from queue,
+         * mark forward neighbors with epoch, then skip reverse neighbors
+         * already marked (bidirectional edges). Epoch increments per v. */
+        int64_t epoch = si * n;  /* unique epoch space per BFS source */
         while (q_head < q_tail) {
             int64_t v = queue[q_head++];
             stack[stack_top++] = v;
+            epoch++;
 
             /* Forward neighbors */
             for (int64_t j = fwd_off[v]; j < fwd_off[v + 1]; j++) {
@@ -14419,16 +14428,17 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
                 if (dist[w] == dist[v] + 1) {
                     sigma[w] += sigma[v];
                     pred_off[w + 1]++;
+                    seen_epoch[w] = epoch;  /* mark w as counted for this v */
                 }
             }
-            /* Reverse neighbors (undirected) */
+            /* Reverse neighbors (undirected), skip if already counted via fwd */
             for (int64_t j = rev_off[v]; j < rev_off[v + 1]; j++) {
                 int64_t w = rev_tgt[j];
                 if (dist[w] < 0) {
                     dist[w] = dist[v] + 1;
                     queue[q_tail++] = w;
                 }
-                if (dist[w] == dist[v] + 1) {
+                if (dist[w] == dist[v] + 1 && seen_epoch[w] != epoch) {
                     sigma[w] += sigma[v];
                     pred_off[w + 1]++;
                 }
@@ -14439,18 +14449,23 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
         for (int64_t i = 1; i <= n; i++)
             pred_off[i] += pred_off[i - 1];
 
-        /* BFS pass 2: fill pred_data grouped by target node using write cursors */
+        /* BFS pass 2: fill pred_data grouped by target node using write cursors.
+         * Same dedup logic as pass 1 to avoid duplicate predecessor entries. */
         for (int64_t i = 0; i < n; i++) pred_cursor[i] = pred_off[i];
+        epoch = si * n;
         for (int64_t si2 = 0; si2 < stack_top; si2++) {
             int64_t v = stack[si2];
+            epoch++;
             for (int64_t j = fwd_off[v]; j < fwd_off[v + 1]; j++) {
                 int64_t w = fwd_tgt[j];
-                if (dist[w] == dist[v] + 1)
+                if (dist[w] == dist[v] + 1) {
                     pred_data[pred_cursor[w]++] = v;
+                    seen_epoch[w] = epoch;
+                }
             }
             for (int64_t j = rev_off[v]; j < rev_off[v + 1]; j++) {
                 int64_t w = rev_tgt[j];
-                if (dist[w] == dist[v] + 1)
+                if (dist[w] == dist[v] + 1 && seen_epoch[w] != epoch)
                     pred_data[pred_cursor[w]++] = v;
             }
         }
@@ -14654,7 +14669,7 @@ static td_t* exec_mst(td_graph_t* g, td_op_t* op) {
     td_op_ext_t* ext = find_ext(g, op->id);
     if (!ext) return TD_ERR_PTR(TD_ERR_NYI);
     td_rel_t* rel = (td_rel_t*)ext->graph.rel;
-    if (!rel || !rel->fwd.props) return TD_ERR_PTR(TD_ERR_SCHEMA);
+    if (!rel || !rel->fwd.props || !rel->fwd.rowmap) return TD_ERR_PTR(TD_ERR_SCHEMA);
 
     int64_t n = rel->fwd.n_nodes;
     int64_t m = rel->fwd.n_edges;
