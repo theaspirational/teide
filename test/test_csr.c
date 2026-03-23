@@ -2578,6 +2578,92 @@ static MunitResult test_k_shortest(const void* params, void* data) {
 }
 
 /* --------------------------------------------------------------------------
+ * Test: betweenness centrality (Brandes, exact)
+ * -------------------------------------------------------------------------- */
+
+static MunitResult test_betweenness(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    /* DAG: 0->1, 0->2, 1->3, 2->3
+     * Nodes 1 and 2 are bridges -- should have nonzero betweenness. */
+    td_t* edges = make_dag_edge_table();
+    td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
+
+    td_t* tbl = td_table_new(1);
+    td_t* dummy_vec = td_vec_from_raw(TD_I64, (int64_t[]){0}, 1);
+    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6), dummy_vec);
+    td_release(dummy_vec);
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* bc = td_betweenness(g, rel, 0);  /* exact */
+    munit_assert_ptr_not_null(bc);
+
+    td_t* result = td_execute(g, bc);
+    munit_assert_ptr_not_null(result);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(td_table_nrows(result), ==, 4);
+
+    int64_t cent_sym = td_sym_intern("_centrality", 11);
+    td_t* cent_col = td_table_get_col(result, cent_sym);
+    munit_assert_ptr_not_null(cent_col);
+    double* cents = (double*)td_data(cent_col);
+
+    /* All centrality values should be >= 0 */
+    for (int i = 0; i < 4; i++) {
+        munit_assert_double(cents[i], >=, 0.0);
+    }
+
+    /* Node 0 is source-only, node 3 is sink-only -- lower betweenness.
+     * Nodes 1 and 2 are intermediaries -- should have higher betweenness. */
+    munit_assert_double(cents[1] + cents[2], >, cents[0] + cents[3]);
+
+    td_release(result);
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* --------------------------------------------------------------------------
+ * Test: betweenness centrality (Brandes, sampled)
+ * -------------------------------------------------------------------------- */
+
+static MunitResult test_betweenness_sampled(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    td_t* edges = make_edge_table();
+    td_rel_t* rel = td_rel_from_edges(edges, "src", "dst", 4, 4, false);
+
+    td_t* tbl = td_table_new(1);
+    td_t* dummy_vec = td_vec_from_raw(TD_I64, (int64_t[]){0}, 1);
+    tbl = td_table_add_col(tbl, td_sym_intern("_dummy", 6), dummy_vec);
+    td_release(dummy_vec);
+    td_graph_t* g = td_graph_new(tbl);
+
+    td_op_t* bc = td_betweenness(g, rel, 2);  /* sample 2 sources */
+    td_t* result = td_execute(g, bc);
+    munit_assert_ptr_not_null(result);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(td_table_nrows(result), ==, 4);
+
+    td_release(result);
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(tbl);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* --------------------------------------------------------------------------
  * Suite definition
  * -------------------------------------------------------------------------- */
 
@@ -2633,6 +2719,8 @@ static MunitTest csr_tests[] = {
     { "/random_walk",   test_random_walk,            NULL, NULL, 0, NULL },
     { "/astar",         test_astar,                  NULL, NULL, 0, NULL },
     { "/k_shortest",   test_k_shortest,             NULL, NULL, 0, NULL },
+    { "/betweenness",  test_betweenness,            NULL, NULL, 0, NULL },
+    { "/betweenness_s", test_betweenness_sampled,   NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },  /* terminator */
 };
 

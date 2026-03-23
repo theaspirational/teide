@@ -55,10 +55,10 @@ git commit -m "feat: add opcodes and declarations for betweenness, closeness, MS
 
 ### Task 2: Betweenness centrality (Brandes) — C kernel + test
 
-- [ ] Write failing tests (test_betweenness, test_betweenness_sampled)
-- [ ] Implement DAG constructor td_betweenness in graph.c
-- [ ] Implement exec_betweenness kernel in exec.c
-- [ ] Tests pass
+- [x] Write failing tests (test_betweenness, test_betweenness_sampled)
+- [x] Implement DAG constructor td_betweenness in graph.c
+- [x] Implement exec_betweenness kernel in exec.c
+- [x] Tests pass
 
 Brandes' algorithm: BFS from each source, accumulate dependency scores backward. O(n·m) exact, O(sample·m) approximate when `sample_size > 0`.
 
