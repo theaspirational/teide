@@ -14521,7 +14521,7 @@ static td_t* exec_betweenness(td_graph_t* g, td_op_t* op) {
 
 /* --------------------------------------------------------------------------
  * exec_closeness: closeness centrality via BFS distance sums.
- * closeness[v] = (reachable - 1) / sum_dist[v]. O(n*m) exact,
+ * closeness[v] = reachable / sum_dist[v]. O(n*m) exact,
  * O(sample*m) approximate when sample_size > 0.
  * -------------------------------------------------------------------------- */
 static td_t* exec_closeness(td_graph_t* g, td_op_t* op) {

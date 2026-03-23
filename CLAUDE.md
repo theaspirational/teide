@@ -65,7 +65,7 @@ src/store/fileio.{h,c}     Cross-platform file I/O — locking (flock/LockFileEx
 src/table/sym.{h,c}        Global sym intern table — arena-backed string atoms, save/load, append-only persistence, file locking
 src/mem/arena.{h,c}        Arena (bump) allocator — td_arena_t, bulk alloc for sym table
 test/test_arena.c           Arena allocator tests (alloc, reset, destroy, sym integration)
-test/test_csr.c             Graph engine tests (55 tests)
+test/test_csr.c             Graph engine tests (56 tests)
 test/test_opt.c             Optimizer pass tests (filter reorder, predicate pushdown)
 test/test_store.c           Storage tests (file I/O, sym persistence, col bounds validation)
 test/test_sym.c             Sym table tests (save/load roundtrip, append-only, corruption)
