@@ -586,9 +586,9 @@ git commit -m "feat: A* shortest path — Dijkstra with Euclidean coordinate heu
 
 ### Task 5: Yen's k-shortest paths — C kernel + test
 
-- [ ] Write failing test
-- [ ] Implement DAG constructor and executor kernel
-- [ ] Tests pass
+- [x] Write failing test
+- [x] Implement DAG constructor and executor kernel
+- [x] Tests pass
 
 **Files:**
 - Modify: `src/ops/exec.c`

@@ -2492,6 +2492,66 @@ static MunitResult test_astar(const void* params, void* data) {
     return MUNIT_OK;
 }
 
+static MunitResult test_k_shortest(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    td_t* edges; td_rel_t* rel; td_t* node_props;
+    make_astar_graph(&edges, &rel, &node_props);
+
+    td_graph_t* g = td_graph_new(edges);
+    td_op_t* src = td_const_i64(g, 0);
+    td_op_t* dst = td_const_i64(g, 4);
+    td_op_t* ks = td_k_shortest(g, src, dst, rel, "weight", 3);
+    munit_assert_ptr_not_null(ks);
+
+    td_t* result = td_execute(g, ks);
+    munit_assert_ptr_not_null(result);
+    munit_assert_false(TD_IS_ERR(result));
+
+    /* Should find at least 2 paths: 0->1->3->4 (6.0) and 0->2->3->4 (8.0) */
+    int64_t nrows = td_table_nrows(result);
+    munit_assert_int(nrows, >=, 2);
+
+    /* Check path_id column exists */
+    int64_t pid_sym = td_sym_intern("_path_id", 8);
+    td_t* pid_col = td_table_get_col(result, pid_sym);
+    munit_assert_ptr_not_null(pid_col);
+
+    /* First path should have lowest total distance */
+    int64_t dist_sym = td_sym_intern("_dist", 5);
+    td_t* dist_col = td_table_get_col(result, dist_sym);
+    double* dists = (double*)td_data(dist_col);
+    /* First row of path 0 should be source with dist 0 */
+    munit_assert_double(dists[0], >=, -0.01);
+    munit_assert_double(dists[0], <=, 0.01);
+
+    /* Verify path_id 0 exists and ends at dst with dist ~6.0 */
+    int64_t node_sym = td_sym_intern("_node", 5);
+    td_t* node_col = td_table_get_col(result, node_sym);
+    int64_t* nodes_arr = (int64_t*)td_data(node_col);
+    int64_t* pids = (int64_t*)td_data(pid_col);
+
+    /* Find last row of path 0 */
+    int64_t last_p0 = 0;
+    for (int64_t i = 0; i < nrows; i++) {
+        if (pids[i] == 0) last_p0 = i;
+    }
+    munit_assert_int(nodes_arr[last_p0], ==, 4);
+    munit_assert_double(dists[last_p0], >=, 5.99);
+    munit_assert_double(dists[last_p0], <=, 6.01);
+
+    td_release(result);
+    td_graph_free(g);
+    td_rel_free(rel);
+    td_release(edges);
+    td_release(node_props);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
 /* --------------------------------------------------------------------------
  * Suite definition
  * -------------------------------------------------------------------------- */
@@ -2547,6 +2607,7 @@ static MunitTest csr_tests[] = {
     { "/cluster_coeff",  test_cluster_coeff,          NULL, NULL, 0, NULL },
     { "/random_walk",   test_random_walk,            NULL, NULL, 0, NULL },
     { "/astar",         test_astar,                  NULL, NULL, 0, NULL },
+    { "/k_shortest",   test_k_shortest,             NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL },  /* terminator */
 };
 

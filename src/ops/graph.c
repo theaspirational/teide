@@ -1447,6 +1447,31 @@ td_op_t* td_astar(td_graph_t* g, td_op_t* src, td_op_t* dst,
     return &g->nodes[ext->base.id];
 }
 
+td_op_t* td_k_shortest(td_graph_t* g, td_op_t* src, td_op_t* dst,
+                       td_rel_t* rel, const char* weight_col, uint16_t k) {
+    if (!g || !src || !dst || !rel || !weight_col || k == 0) return NULL;
+
+    td_op_ext_t* ext = graph_alloc_ext_node(g);
+    if (!ext) return NULL;
+
+    src = &g->nodes[src->id];
+    dst = &g->nodes[dst->id];
+
+    ext->base.opcode    = OP_K_SHORTEST;
+    ext->base.arity     = 2;
+    ext->base.inputs[0] = src;
+    ext->base.inputs[1] = dst;
+    ext->base.out_type  = TD_TABLE;
+    ext->base.est_rows  = (uint32_t)(k * rel->fwd.n_nodes);
+    ext->graph.rel       = rel;
+    ext->graph.direction = 0;
+    ext->graph.max_iter  = k;
+    ext->graph.weight_col_sym = td_sym_intern(weight_col, (int64_t)strlen(weight_col));
+
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}
+
 td_op_t* td_hnsw_knn(td_graph_t* g, td_hnsw_t* idx,
                        const float* query_vec, int32_t dim,
                        int64_t k, int32_t ef_search) {
