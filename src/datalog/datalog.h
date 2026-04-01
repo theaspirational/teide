@@ -197,6 +197,11 @@ int dl_rule_add_assign(dl_rule_t* rule, int target_var, int op, dl_expr_t* expr)
  * Arguments are set via dl_body_set_var (same as atoms). */
 int dl_rule_add_builtin(dl_rule_t* rule, int builtin_id, int arity);
 
+/* Add a comparison with expression trees on both sides.
+ * E.g., "X + Y < Z * 2" → cmp_op=DL_CMP_LT, lhs=binop(+,X,Y), rhs=binop(*,Z,2).
+ * Returns body literal index. */
+int dl_rule_add_cmp_expr(dl_rule_t* rule, int cmp_op, dl_expr_t* lhs, dl_expr_t* rhs);
+
 /* Add an interval bind: decompose two consecutive columns at the fact variable's
  * position into start_var and end_var. Returns body literal index. */
 int dl_rule_add_interval(dl_rule_t* rule, int fact_var, int start_var, int end_var);

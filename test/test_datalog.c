@@ -1093,6 +1093,176 @@ static MunitResult test_dl_provenance_disabled(const void* params, void* data) {
 }
 
 /* ======================================================================
+ * DL_CMP_EXPR tests — expression-based comparisons
+ * ====================================================================== */
+
+/* Expression comparison: path(X,Y) :- edge(X,Y,W), W + 1 > 5.
+ * edge weights: 3, 5, 7 → W+1: 4, 6, 8 → W+1 > 5: 6, 8 → 2 rows */
+static MunitResult test_dl_cmp_expr_basic(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+
+    /* edge(from, to, weight): (1,2,3), (2,3,5), (3,4,7) */
+    int64_t e0[] = {1, 2, 3};
+    int64_t e1[] = {2, 3, 4};
+    int64_t e2[] = {3, 5, 7};
+    const int64_t* edata[] = {e0, e1, e2};
+    td_t* edge_tbl = make_dl_table(3, edata, 3);
+    dl_add_edb(prog, "edge", edge_tbl, 3);
+
+    /* path(X,Y) :- edge(X,Y,W), W + 1 > 5.
+     * Variables: X=0, Y=1, W=2 */
+    dl_rule_t rule;
+    dl_rule_init(&rule, "path", 2);
+    dl_rule_head_var(&rule, 0, 0);  /* X */
+    dl_rule_head_var(&rule, 1, 1);  /* Y */
+
+    int b0 = dl_rule_add_atom(&rule, "edge", 3);
+    dl_body_set_var(&rule, b0, 0, 0);
+    dl_body_set_var(&rule, b0, 1, 1);
+    dl_body_set_var(&rule, b0, 2, 2);
+
+    /* W + 1 > 5: LHS = binop(+, var(2), const(1)), RHS = const(5) */
+    rule.n_vars = 3;  /* ensure n_vars covers W */
+    dl_rule_add_cmp_expr(&rule, DL_CMP_GT,
+        dl_expr_binop(OP_ADD, dl_expr_var(2), dl_expr_const(1)),
+        dl_expr_const(5));
+    dl_add_rule(prog, &rule);
+
+    int rc = dl_eval(prog);
+    munit_assert_int(rc, ==, 0);
+
+    td_t* res = dl_query(prog, "path");
+    munit_assert_ptr_not_null(res);
+    munit_assert_false(TD_IS_ERR(res));
+    /* W=3 → W+1=4 > 5? no. W=5 → 6 > 5? yes. W=7 → 8 > 5? yes. → 2 rows */
+    munit_assert_int(td_table_nrows(res), ==, 2);
+
+    td_release(edge_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Nested expression comparison: result(X) :- data(X,A,B), A * B + A > 100.
+ * data: (1,5,10), (2,8,15), (3,3,2)
+ * A*B+A: 5*10+5=55, 8*15+8=128, 3*2+3=9
+ * > 100: only 128 → 1 row */
+static MunitResult test_dl_cmp_expr_nested(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+
+    int64_t d0[] = {1, 2, 3};
+    int64_t d1[] = {5, 8, 3};
+    int64_t d2[] = {10, 15, 2};
+    const int64_t* ddata[] = {d0, d1, d2};
+    td_t* data_tbl = make_dl_table(3, ddata, 3);
+    dl_add_edb(prog, "data", data_tbl, 3);
+
+    /* result(X) :- data(X,A,B), A * B + A > 100.
+     * Variables: X=0, A=1, B=2 */
+    dl_rule_t rule;
+    dl_rule_init(&rule, "result", 1);
+    dl_rule_head_var(&rule, 0, 0);  /* X */
+
+    int b0 = dl_rule_add_atom(&rule, "data", 3);
+    dl_body_set_var(&rule, b0, 0, 0);
+    dl_body_set_var(&rule, b0, 1, 1);
+    dl_body_set_var(&rule, b0, 2, 2);
+
+    /* A * B + A > 100:
+     * LHS = binop(+, binop(*, var(1), var(2)), var(1))
+     * RHS = const(100) */
+    rule.n_vars = 3;
+    dl_rule_add_cmp_expr(&rule, DL_CMP_GT,
+        dl_expr_binop(OP_ADD,
+            dl_expr_binop(OP_MUL, dl_expr_var(1), dl_expr_var(2)),
+            dl_expr_var(1)),
+        dl_expr_const(100));
+    dl_add_rule(prog, &rule);
+
+    int rc = dl_eval(prog);
+    munit_assert_int(rc, ==, 0);
+
+    td_t* res = dl_query(prog, "result");
+    munit_assert_ptr_not_null(res);
+    munit_assert_false(TD_IS_ERR(res));
+    munit_assert_int(td_table_nrows(res), ==, 1);
+
+    /* The passing row is X=2 (A=8, B=15, A*B+A=128) */
+    int64_t* x_col = (int64_t*)td_data(td_table_get_col_idx(res, 0));
+    munit_assert_int(x_col[0], ==, 2);
+
+    td_release(data_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Expression comparison with both sides being expressions:
+ * result(X) :- data(X,A,B), A + 1 < B * 2.
+ * data: (1,10,3), (2,2,5), (3,7,4)
+ * A+1: 11, 3, 8. B*2: 6, 10, 8.
+ * A+1 < B*2: 11<6? no. 3<10? yes. 8<8? no. → 1 row */
+static MunitResult test_dl_cmp_expr_both_sides(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+
+    int64_t d0[] = {1, 2, 3};
+    int64_t d1[] = {10, 2, 7};
+    int64_t d2[] = {3, 5, 4};
+    const int64_t* ddata[] = {d0, d1, d2};
+    td_t* data_tbl = make_dl_table(3, ddata, 3);
+    dl_add_edb(prog, "data", data_tbl, 3);
+
+    /* result(X) :- data(X,A,B), A + 1 < B * 2.
+     * Variables: X=0, A=1, B=2 */
+    dl_rule_t rule;
+    dl_rule_init(&rule, "result2", 1);
+    dl_rule_head_var(&rule, 0, 0);
+
+    int b0 = dl_rule_add_atom(&rule, "data", 3);
+    dl_body_set_var(&rule, b0, 0, 0);
+    dl_body_set_var(&rule, b0, 1, 1);
+    dl_body_set_var(&rule, b0, 2, 2);
+
+    /* A + 1 < B * 2 */
+    rule.n_vars = 3;
+    dl_rule_add_cmp_expr(&rule, DL_CMP_LT,
+        dl_expr_binop(OP_ADD, dl_expr_var(1), dl_expr_const(1)),
+        dl_expr_binop(OP_MUL, dl_expr_var(2), dl_expr_const(2)));
+    dl_add_rule(prog, &rule);
+
+    int rc = dl_eval(prog);
+    munit_assert_int(rc, ==, 0);
+
+    td_t* res = dl_query(prog, "result2");
+    munit_assert_ptr_not_null(res);
+    munit_assert_false(TD_IS_ERR(res));
+    munit_assert_int(td_table_nrows(res), ==, 1);
+
+    int64_t* x_col = (int64_t*)td_data(td_table_get_col_idx(res, 0));
+    munit_assert_int(x_col[0], ==, 2);
+
+    td_release(data_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ======================================================================
  * DL_INTERVAL tests
  * ====================================================================== */
 
@@ -1240,6 +1410,9 @@ static MunitTest tests[] = {
     { "/dl_builtin_abs",       test_dl_builtin_abs,       NULL, NULL, 0, NULL },
     { "/dl_provenance_basic",  test_dl_provenance_basic,  NULL, NULL, 0, NULL },
     { "/dl_provenance_disabled", test_dl_provenance_disabled, NULL, NULL, 0, NULL },
+    { "/dl_cmp_expr_basic",    test_dl_cmp_expr_basic,    NULL, NULL, 0, NULL },
+    { "/dl_cmp_expr_nested",   test_dl_cmp_expr_nested,   NULL, NULL, 0, NULL },
+    { "/dl_cmp_expr_both",     test_dl_cmp_expr_both_sides, NULL, NULL, 0, NULL },
     { "/dl_interval_basic",    test_dl_interval_basic,    NULL, NULL, 0, NULL },
     { "/dl_interval_filter",   test_dl_interval_with_filter, NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }

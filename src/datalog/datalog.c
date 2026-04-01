@@ -301,6 +301,20 @@ int dl_rule_add_builtin(dl_rule_t* rule, int builtin_id, int arity) {
     return idx;
 }
 
+int dl_rule_add_cmp_expr(dl_rule_t* rule, int cmp_op, dl_expr_t* lhs, dl_expr_t* rhs) {
+    if (rule->n_body >= DL_MAX_BODY) return -1;
+    int idx = rule->n_body++;
+    dl_body_t* b = &rule->body[idx];
+    memset(b, 0, sizeof(dl_body_t));
+    b->type = DL_CMP;
+    b->cmp_op = cmp_op;
+    b->cmp_lhs_expr = lhs;
+    b->cmp_rhs_expr = rhs;
+    /* n_vars may need updating from the expression trees.
+     * Walk the trees to find max var_idx. */
+    return idx;
+}
+
 int dl_rule_add_interval(dl_rule_t* rule, int fact_var, int start_var, int end_var) {
     if (rule->n_body >= DL_MAX_BODY) return -1;
     int idx = rule->n_body++;
@@ -942,32 +956,59 @@ td_op_t* dl_compile_rule(dl_program_t* prog, dl_rule_t* rule,
         }
 
         case DL_CMP: {
-            if (body->cmp_lhs_expr || body->cmp_rhs_expr) break; /* handled by CMP_EXPR path */
-
             int64_t nrows = td_table_nrows(accum);
             if (nrows == 0) break;
 
-            int lhs_col = var_col[body->cmp_lhs];
-            td_t* lhs_vec = td_table_get_col_idx(accum, lhs_col);
-            if (!lhs_vec) break;
-            int64_t* lhs_data = (int64_t*)td_data(lhs_vec);
+            td_t* lhs_evaled = NULL;
+            td_t* rhs_evaled = NULL;
+            int64_t* lhs_data;
+            int64_t* rhs_data;
 
-            int64_t rhs_const = body->cmp_const;
-            int64_t* rhs_data = NULL;
-            if (body->cmp_rhs != DL_CONST) {
+            if (body->cmp_lhs_expr) {
+                /* Expression-based LHS */
+                lhs_evaled = dl_eval_expr(body->cmp_lhs_expr, accum, var_col, nrows);
+                if (!lhs_evaled || TD_IS_ERR(lhs_evaled)) break;
+                lhs_data = (int64_t*)td_data(lhs_evaled);
+            } else {
+                /* Simple variable LHS */
+                int lhs_col = var_col[body->cmp_lhs];
+                td_t* lhs_vec = td_table_get_col_idx(accum, lhs_col);
+                if (!lhs_vec) break;
+                lhs_data = (int64_t*)td_data(lhs_vec);
+            }
+
+            if (body->cmp_rhs_expr) {
+                /* Expression-based RHS */
+                rhs_evaled = dl_eval_expr(body->cmp_rhs_expr, accum, var_col, nrows);
+                if (!rhs_evaled || TD_IS_ERR(rhs_evaled)) {
+                    if (lhs_evaled) td_release(lhs_evaled);
+                    break;
+                }
+                rhs_data = (int64_t*)td_data(rhs_evaled);
+            } else if (body->cmp_rhs != DL_CONST) {
+                /* Simple variable RHS */
                 int rhs_col = var_col[body->cmp_rhs];
                 td_t* rhs_vec = td_table_get_col_idx(accum, rhs_col);
-                if (!rhs_vec) break;
+                if (!rhs_vec) {
+                    if (lhs_evaled) td_release(lhs_evaled);
+                    break;
+                }
                 rhs_data = (int64_t*)td_data(rhs_vec);
+            } else {
+                rhs_data = NULL;  /* constant RHS */
             }
 
             /* Build boolean mask */
             td_t* mask_block = td_alloc((size_t)nrows * sizeof(bool));
-            if (!mask_block) break;
+            if (!mask_block) {
+                if (lhs_evaled) td_release(lhs_evaled);
+                if (rhs_evaled) td_release(rhs_evaled);
+                break;
+            }
             bool* mask = (bool*)td_data(mask_block);
             int64_t count = 0;
             for (int64_t r = 0; r < nrows; r++) {
-                int64_t rv = rhs_data ? rhs_data[r] : rhs_const;
+                int64_t rv = rhs_data ? rhs_data[r] : body->cmp_const;
                 bool pass = false;
                 switch (body->cmp_op) {
                 case DL_CMP_EQ: pass = (lhs_data[r] == rv); break;
@@ -980,6 +1021,9 @@ td_op_t* dl_compile_rule(dl_program_t* prog, dl_rule_t* rule,
                 mask[r] = pass;
                 if (pass) count++;
             }
+
+            if (lhs_evaled) td_release(lhs_evaled);
+            if (rhs_evaled) td_release(rhs_evaled);
 
             if (count == nrows) {
                 td_free(mask_block);
