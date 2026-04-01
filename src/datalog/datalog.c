@@ -32,6 +32,8 @@ void dl_program_free(dl_program_t* prog) {
     for (int i = 0; i < prog->n_rels; i++) {
         if (prog->rels[i].table && !TD_IS_ERR(prog->rels[i].table))
             td_release(prog->rels[i].table);
+        if (prog->rels[i].prov_col && !TD_IS_ERR(prog->rels[i].prov_col))
+            td_release(prog->rels[i].prov_col);
     }
     td_free(dl_prog_block(prog));
 }
@@ -740,7 +742,7 @@ static td_t* dl_project(td_t* tbl, const int* col_indices, int n_out,
 }
 
 td_op_t* dl_compile_rule(dl_program_t* prog, dl_rule_t* rule,
-                          int delta_pos, td_graph_t* g) {
+                          int delta_pos, int rule_idx, td_graph_t* g) {
     /* Materializing approach: execute body atoms one at a time.
      *
      * For each positive body atom, we get the relation table and apply
@@ -1245,6 +1247,79 @@ static td_t* normalize_columns(td_t* tbl, dl_rel_t* rel) {
 }
 
 /* ========================================================================
+ * Provenance helpers
+ * ======================================================================== */
+
+/* Check if a row in `tbl` at position `row` matches any row in `ref`.
+ * Both tables must have the same arity. Returns true if found. */
+static bool dl_row_in_table(td_t* tbl, int64_t row, td_t* ref) {
+    int64_t ncols = td_table_ncols(tbl);
+    int64_t ref_rows = td_table_nrows(ref);
+    for (int64_t r = 0; r < ref_rows; r++) {
+        bool match = true;
+        for (int64_t c = 0; c < ncols; c++) {
+            int64_t* td = (int64_t*)td_data(td_table_get_col_idx(tbl, c));
+            int64_t* rd = (int64_t*)td_data(td_table_get_col_idx(ref, c));
+            if (td[row] != rd[r]) { match = false; break; }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+/* Build provenance for all IDB relations.
+ * For each rule, compile with final tables and mark matching tuples. */
+static void dl_build_provenance(dl_program_t* prog) {
+    for (int ri = 0; ri < prog->n_rels; ri++) {
+        dl_rel_t* rel = &prog->rels[ri];
+        if (!rel->is_idb) continue;
+
+        int64_t nrows = td_table_nrows(rel->table);
+        if (nrows == 0) continue;
+
+        /* Allocate provenance column initialized to -1 (unknown) */
+        td_t* prov = td_vec_new(TD_I64, nrows);
+        if (!prov || TD_IS_ERR(prov)) continue;
+        prov->len = nrows;
+        int64_t* pd = (int64_t*)td_data(prov);
+        for (int64_t r = 0; r < nrows; r++)
+            pd[r] = -1;
+
+        /* For each rule with this head predicate */
+        for (int r = 0; r < prog->n_rules; r++) {
+            dl_rule_t* rule = &prog->rules[r];
+            if (strcmp(rule->head_pred, rel->name) != 0) continue;
+
+            /* Compile and execute the rule to get its derivable tuples */
+            td_graph_t* g = td_graph_new(NULL);
+            if (!g) continue;
+
+            td_op_t* output = dl_compile_rule(prog, rule, -1, r, g);
+            if (!output) { td_graph_free(g); continue; }
+
+            td_t* raw = td_execute(g, output);
+            td_graph_free(g);
+            if (!raw || TD_IS_ERR(raw)) continue;
+
+            td_t* derived = table_rename_cols(raw, rel);
+            td_release(raw);
+            if (!derived || TD_IS_ERR(derived)) continue;
+
+            /* Mark rows in rel->table that appear in derived */
+            for (int64_t row = 0; row < nrows; row++) {
+                if (pd[row] >= 0) continue;  /* already attributed */
+                if (dl_row_in_table(rel->table, row, derived))
+                    pd[row] = r;
+            }
+            td_release(derived);
+        }
+
+        if (rel->prov_col) td_release(rel->prov_col);
+        rel->prov_col = prov;
+    }
+}
+
+/* ========================================================================
  * Semi-naive fixpoint evaluation
  * ======================================================================== */
 
@@ -1260,10 +1335,12 @@ int dl_eval(dl_program_t* prog) {
     for (int s = 0; s < prog->n_strata; s++) {
         /* Collect rules in this stratum */
         dl_rule_t* stratum_rules[DL_MAX_RULES];
+        int stratum_rule_idx[DL_MAX_RULES];  /* original index in prog->rules */
         int n_stratum_rules = 0;
 
         for (int r = 0; r < prog->n_rules; r++) {
             if (prog->rules[r].stratum == s) {
+                stratum_rule_idx[n_stratum_rules] = r;
                 stratum_rules[n_stratum_rules++] = &prog->rules[r];
             }
         }
@@ -1280,7 +1357,7 @@ int dl_eval(dl_program_t* prog) {
             td_graph_t* g = td_graph_new(NULL);
             if (!g) continue;
 
-            td_op_t* output = dl_compile_rule(prog, rule, -1, g);
+            td_op_t* output = dl_compile_rule(prog, rule, -1, stratum_rule_idx[ri], g);
             if (!output) { td_graph_free(g); continue; }
 
             td_t* raw_tuples = td_execute(g, output);
@@ -1377,7 +1454,7 @@ int dl_eval(dl_program_t* prog) {
                     td_graph_t* g = td_graph_new(NULL);
                     if (!g) { prog->rels[body_rel].table = saved; continue; }
 
-                    td_op_t* output = dl_compile_rule(prog, rule, b, g);
+                    td_op_t* output = dl_compile_rule(prog, rule, b, stratum_rule_idx[ri], g);
                     if (!output) {
                         td_graph_free(g);
                         prog->rels[body_rel].table = saved;
@@ -1467,6 +1544,10 @@ int dl_eval(dl_program_t* prog) {
         }
     }
 
+    /* Build provenance if requested */
+    if (prog->flags & DL_FLAG_PROVENANCE)
+        dl_build_provenance(prog);
+
     return 0;
 }
 
@@ -1479,4 +1560,12 @@ td_t* dl_query(dl_program_t* prog, const char* pred_name) {
     int idx = dl_find_rel(prog, pred_name);
     if (idx < 0) return NULL;
     return prog->rels[idx].table;
+}
+
+td_t* dl_get_provenance(dl_program_t* prog, const char* pred_name) {
+    if (!prog || !pred_name) return NULL;
+    if (!(prog->flags & DL_FLAG_PROVENANCE)) return NULL;
+    int idx = dl_find_rel(prog, pred_name);
+    if (idx < 0) return NULL;
+    return prog->rels[idx].prov_col;
 }

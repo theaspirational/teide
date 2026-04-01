@@ -979,6 +979,120 @@ static MunitResult test_dl_builtin_abs(const void* params, void* data) {
 }
 
 /* ======================================================================
+ * Provenance tracking tests
+ * ====================================================================== */
+
+/* Provenance: two rules deriving into the same head, verify rule indices */
+static MunitResult test_dl_provenance_basic(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+    prog->flags = DL_FLAG_PROVENANCE;
+
+    /* a(1,2), a(3,4) */
+    int64_t a0[] = {1, 3};
+    int64_t a1[] = {2, 4};
+    const int64_t* adata[] = {a0, a1};
+    td_t* a_tbl = make_dl_table(2, adata, 2);
+    dl_add_edb(prog, "a", a_tbl, 2);
+
+    /* b(5,6), b(7,8) */
+    int64_t b0[] = {5, 7};
+    int64_t b1[] = {6, 8};
+    const int64_t* bdata[] = {b0, b1};
+    td_t* b_tbl = make_dl_table(2, bdata, 2);
+    dl_add_edb(prog, "b", b_tbl, 2);
+
+    /* Rule 0: c(X,Y) :- a(X,Y). */
+    dl_rule_t r1;
+    dl_rule_init(&r1, "c", 2);
+    dl_rule_head_var(&r1, 0, 0);
+    dl_rule_head_var(&r1, 1, 1);
+    int ba = dl_rule_add_atom(&r1, "a", 2);
+    dl_body_set_var(&r1, ba, 0, 0);
+    dl_body_set_var(&r1, ba, 1, 1);
+    dl_add_rule(prog, &r1);
+
+    /* Rule 1: c(X,Y) :- b(X,Y). */
+    dl_rule_t r2;
+    dl_rule_init(&r2, "c", 2);
+    dl_rule_head_var(&r2, 0, 0);
+    dl_rule_head_var(&r2, 1, 1);
+    int bb = dl_rule_add_atom(&r2, "b", 2);
+    dl_body_set_var(&r2, bb, 0, 0);
+    dl_body_set_var(&r2, bb, 1, 1);
+    dl_add_rule(prog, &r2);
+
+    int rc = dl_eval(prog);
+    munit_assert_int(rc, ==, 0);
+
+    td_t* c = dl_query(prog, "c");
+    munit_assert_ptr_not_null(c);
+    munit_assert_false(TD_IS_ERR(c));
+    munit_assert_int(td_table_nrows(c), ==, 4);
+
+    /* Get provenance */
+    td_t* prov = dl_get_provenance(prog, "c");
+    munit_assert_ptr_not_null(prov);
+    munit_assert_int(prov->len, ==, 4);
+
+    /* Each row should have a valid rule index (0 or 1) */
+    int64_t* pd = (int64_t*)td_data(prov);
+    int count_r0 = 0, count_r1 = 0;
+    for (int64_t r = 0; r < 4; r++) {
+        munit_assert_int(pd[r], >=, 0);
+        munit_assert_int(pd[r], <=, 1);
+        if (pd[r] == 0) count_r0++;
+        else count_r1++;
+    }
+    /* Rule 0 derives 2 tuples from a, rule 1 derives 2 from b */
+    munit_assert_int(count_r0, ==, 2);
+    munit_assert_int(count_r1, ==, 2);
+
+    td_release(a_tbl);
+    td_release(b_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Provenance disabled: dl_get_provenance returns NULL */
+static MunitResult test_dl_provenance_disabled(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+    /* flags = 0: no provenance */
+
+    int64_t a0[] = {1};
+    const int64_t* adata[] = {a0};
+    td_t* a_tbl = make_dl_table(1, adata, 1);
+    dl_add_edb(prog, "a", a_tbl, 1);
+
+    dl_rule_t r1;
+    dl_rule_init(&r1, "b", 1);
+    dl_rule_head_var(&r1, 0, 0);
+    int b0 = dl_rule_add_atom(&r1, "a", 1);
+    dl_body_set_var(&r1, b0, 0, 0);
+    dl_add_rule(prog, &r1);
+
+    dl_eval(prog);
+
+    td_t* prov = dl_get_provenance(prog, "b");
+    munit_assert(prov == NULL);
+
+    td_release(a_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ======================================================================
  * DL_INTERVAL tests
  * ====================================================================== */
 
@@ -1124,6 +1238,8 @@ static MunitTest tests[] = {
     { "/dl_builtin_before",    test_dl_builtin_before,    NULL, NULL, 0, NULL },
     { "/dl_builtin_duration",  test_dl_builtin_duration,  NULL, NULL, 0, NULL },
     { "/dl_builtin_abs",       test_dl_builtin_abs,       NULL, NULL, 0, NULL },
+    { "/dl_provenance_basic",  test_dl_provenance_basic,  NULL, NULL, 0, NULL },
+    { "/dl_provenance_disabled", test_dl_provenance_disabled, NULL, NULL, 0, NULL },
     { "/dl_interval_basic",    test_dl_interval_basic,    NULL, NULL, 0, NULL },
     { "/dl_interval_filter",   test_dl_interval_with_filter, NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }

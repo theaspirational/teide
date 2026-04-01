@@ -70,6 +70,9 @@ typedef struct dl_expr {
 /* Maximum strata */
 #define DL_MAX_STRATA 16
 
+/* Program flags */
+#define DL_FLAG_PROVENANCE  (1 << 0)  /* track which rule derived each tuple */
+
 /* ===== Body literal ===== */
 typedef struct {
     int     type;                   /* DL_POS, DL_NEG, DL_CMP, DL_ASSIGN */
@@ -110,6 +113,7 @@ typedef struct {
     int     arity;                  /* number of columns */
     bool    is_idb;                 /* true = derived (intensional) */
     int64_t col_names[DL_MAX_ARITY]; /* interned column name symbols */
+    td_t*   prov_col;               /* provenance column (when DL_FLAG_PROVENANCE) */
 } dl_rel_t;
 
 /* ===== Datalog program ===== */
@@ -121,6 +125,7 @@ typedef struct {
     int         strata[DL_MAX_STRATA][DL_MAX_RELS]; /* predicate indices per stratum */
     int         strata_sizes[DL_MAX_STRATA];         /* number of predicates per stratum */
     int         n_strata;
+    uint32_t    flags;                                /* DL_FLAG_* bitmask */
 } dl_program_t;
 
 /* ===== Public API ===== */
@@ -150,6 +155,11 @@ int dl_eval(dl_program_t* prog);
 /* Query the result of a derived relation after evaluation.
  * Returns the backing table (caller does NOT own it). */
 td_t* dl_query(dl_program_t* prog, const char* pred_name);
+
+/* Retrieve the provenance column from a derived relation.
+ * Only valid when DL_FLAG_PROVENANCE is set. Returns the I64 column
+ * of rule indices, or NULL if provenance not enabled/available. */
+td_t* dl_get_provenance(dl_program_t* prog, const char* pred_name);
 
 /* ===== Rule builder helpers ===== */
 
@@ -213,8 +223,9 @@ int dl_ensure_idb(dl_program_t* prog, const char* name, int arity);
 
 /* Compile one rule into a td_graph_t for one fixpoint iteration.
  * delta_pos: which body atom uses the delta relation (-1 for initial pass).
+ * rule_idx: index of this rule in prog->rules (used for provenance).
  * Returns the output node in g that produces new head tuples. */
 td_op_t* dl_compile_rule(dl_program_t* prog, dl_rule_t* rule,
-                          int delta_pos, td_graph_t* g);
+                          int delta_pos, int rule_idx, td_graph_t* g);
 
 #endif /* TEIDE_DATALOG_H */
