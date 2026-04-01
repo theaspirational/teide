@@ -161,6 +161,12 @@ td_t* dl_query(dl_program_t* prog, const char* pred_name);
  * of rule indices, or NULL if provenance not enabled/available. */
 td_t* dl_get_provenance(dl_program_t* prog, const char* pred_name);
 
+/* Stub: deep provenance source offsets (not yet implemented). Returns NULL. */
+td_t* dl_get_provenance_src_offsets(dl_program_t* prog, const char* pred_name);
+
+/* Stub: deep provenance source data (not yet implemented). Returns NULL. */
+td_t* dl_get_provenance_src_data(dl_program_t* prog, const char* pred_name);
+
 /* ===== Rule builder helpers ===== */
 
 /* Initialize a rule with the given head predicate and arity */

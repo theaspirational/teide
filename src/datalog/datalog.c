@@ -1613,3 +1613,17 @@ td_t* dl_get_provenance(dl_program_t* prog, const char* pred_name) {
     if (idx < 0) return NULL;
     return prog->rels[idx].prov_col;
 }
+
+/* Stub: deep provenance source offsets (not yet implemented in C engine).
+ * Returns NULL; Rust side treats this as "no deep provenance available". */
+td_t* dl_get_provenance_src_offsets(dl_program_t* prog, const char* pred_name) {
+    (void)prog; (void)pred_name;
+    return NULL;
+}
+
+/* Stub: deep provenance source data (not yet implemented in C engine).
+ * Returns NULL; Rust side treats this as "no deep provenance available". */
+td_t* dl_get_provenance_src_data(dl_program_t* prog, const char* pred_name) {
+    (void)prog; (void)pred_name;
+    return NULL;
+}
