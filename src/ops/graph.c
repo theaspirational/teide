@@ -1550,3 +1550,11 @@ td_op_t* td_hnsw_knn(td_graph_t* g, td_hnsw_t* idx,
     g->nodes[ext->base.id] = ext->base;
     return &g->nodes[ext->base.id];
 }
+
+/* --------------------------------------------------------------------------
+ * Datalog builders
+ * -------------------------------------------------------------------------- */
+
+td_op_t* td_union_all(td_graph_t* g, td_op_t* left, td_op_t* right) {
+    return make_binary(g, OP_UNION_ALL, left, right, TD_TABLE);
+}

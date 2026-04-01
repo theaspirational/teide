@@ -500,6 +500,10 @@ static inline uint8_t td_sym_dict_width(int64_t dict_size) {
 #define OP_KNN             90   /* brute-force K nearest neighbors        */
 #define OP_HNSW_KNN        91   /* HNSW approximate K nearest neighbors   */
 
+/* Opcodes — Datalog */
+#define OP_UNION_ALL    102   /* row-union of two same-schema tables */
+#define OP_ANTIJOIN     103   /* anti-join: left rows with NO match in right */
+
 /* Opcodes — Misc */
 #define OP_ALIAS        70
 #define OP_MATERIALIZE  71
@@ -1050,6 +1054,13 @@ td_op_t* td_knn(td_graph_t* g, td_op_t* emb_col,
 td_op_t* td_hnsw_knn(td_graph_t* g, td_hnsw_t* idx,
                        const float* query_vec, int32_t dim,
                        int64_t k, int32_t ef_search);
+
+/* Datalog ops */
+/* Row-union (UNION ALL) of two tables with the same schema.
+ * Does NOT deduplicate — equivalent to SQL UNION ALL. */
+td_op_t* td_union_all(td_graph_t* g, td_op_t* left, td_op_t* right);
+/* Anti-join: rows in left with NO matching row in right on all join keys. */
+td_op_t* td_antijoin(td_graph_t* g, td_op_t* left, td_op_t* right);
 
 /* CSR / Relationship API */
 td_rel_t* td_rel_build(td_t* from_table, const char* fk_col,
