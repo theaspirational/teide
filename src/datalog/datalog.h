@@ -16,7 +16,8 @@
 #define DL_POS      0   /* positive atom: pred(X, Y, ...) */
 #define DL_NEG      1   /* negated atom:  not pred(X, Y, ...) */
 #define DL_CMP      2   /* comparison:    X < Y, X = c, etc. */
-#define DL_ASSIGN   3   /* assignment:    X = expr (reserved for future) */
+#define DL_ASSIGN   3   /* assignment:    X = expr */
+#define DL_BUILTIN  4   /* builtin predicate */
 
 /* ===== Comparison operators (for DL_CMP) ===== */
 #define DL_CMP_EQ   0
@@ -25,6 +26,30 @@
 #define DL_CMP_LE   3
 #define DL_CMP_GT   4
 #define DL_CMP_GE   5
+
+/* ===== Assignment operators (for DL_ASSIGN) ===== */
+#define DL_OP_EQ    0   /* simple assignment: X = expr */
+
+/* ===== Builtin predicate IDs (for DL_BUILTIN) ===== */
+#define DL_BUILTIN_BEFORE          0  /* before(S, E, T): filter T < S */
+#define DL_BUILTIN_DURATION_SINCE  1  /* duration_since(T1, T2, D): D = T2 - T1 */
+#define DL_BUILTIN_ABS             2  /* abs(X, Y): Y = |X| */
+
+/* ===== Expression AST for assignments ===== */
+typedef enum {
+    DL_EXPR_CONST,    /* integer constant */
+    DL_EXPR_VAR,      /* bound variable reference */
+    DL_EXPR_BINOP,    /* binary op: +, -, *, / */
+} dl_expr_kind_t;
+
+typedef struct dl_expr {
+    dl_expr_kind_t  kind;
+    int64_t         const_val;   /* for DL_EXPR_CONST */
+    int             var_idx;     /* for DL_EXPR_VAR */
+    int             binop;       /* for DL_EXPR_BINOP: OP_ADD, OP_SUB, etc. */
+    struct dl_expr *left;        /* for DL_EXPR_BINOP */
+    struct dl_expr *right;       /* for DL_EXPR_BINOP */
+} dl_expr_t;
 
 /* Variable index sentinel: constant value, not a variable */
 #define DL_CONST    (-1)
@@ -55,6 +80,9 @@ typedef struct {
     int     cmp_lhs;               /* left variable index (for DL_CMP) */
     int     cmp_rhs;               /* right variable index or DL_CONST */
     int64_t cmp_const;             /* constant value if cmp_rhs == DL_CONST */
+    int     assign_var;            /* target variable index (for DL_ASSIGN) */
+    dl_expr_t *assign_expr;        /* expression tree (for DL_ASSIGN) */
+    int     builtin_id;            /* builtin ID (for DL_BUILTIN) */
 } dl_body_t;
 
 /* ===== Datalog rule: head :- body ===== */
@@ -145,6 +173,24 @@ int dl_rule_add_cmp(dl_rule_t* rule, int cmp_op, int lhs_var, int rhs_var);
 
 /* Add a comparison with a constant RHS. Returns body literal index. */
 int dl_rule_add_cmp_const(dl_rule_t* rule, int cmp_op, int lhs_var, int64_t rhs_val);
+
+/* Add an assignment: target_var = expr. Returns body literal index. */
+int dl_rule_add_assign(dl_rule_t* rule, int target_var, int op, dl_expr_t* expr);
+
+/* Add a builtin predicate. Returns body literal index.
+ * Arguments are set via dl_body_set_var (same as atoms). */
+int dl_rule_add_builtin(dl_rule_t* rule, int builtin_id, int arity);
+
+/* ===== Expression tree builders ===== */
+
+/* Create a constant expression */
+dl_expr_t* dl_expr_const(int64_t val);
+
+/* Create a variable reference expression */
+dl_expr_t* dl_expr_var(int var_idx);
+
+/* Create a binary operation expression (OP_ADD, OP_SUB, OP_MUL, OP_DIV) */
+dl_expr_t* dl_expr_binop(int op, dl_expr_t* left, dl_expr_t* right);
 
 /* ===== Internal (used by compiler) ===== */
 

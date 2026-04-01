@@ -232,6 +232,74 @@ int dl_rule_add_cmp_const(dl_rule_t* rule, int cmp_op, int lhs_var, int64_t rhs_
 }
 
 /* ========================================================================
+ * Expression tree builders
+ * ======================================================================== */
+
+static dl_expr_t* dl_expr_alloc(void) {
+    td_t* block = td_alloc(sizeof(dl_expr_t));
+    if (!block) return NULL;
+    dl_expr_t* e = (dl_expr_t*)td_data(block);
+    memset(e, 0, sizeof(dl_expr_t));
+    return e;
+}
+
+dl_expr_t* dl_expr_const(int64_t val) {
+    dl_expr_t* e = dl_expr_alloc();
+    if (!e) return NULL;
+    e->kind = DL_EXPR_CONST;
+    e->const_val = val;
+    return e;
+}
+
+dl_expr_t* dl_expr_var(int var_idx) {
+    dl_expr_t* e = dl_expr_alloc();
+    if (!e) return NULL;
+    e->kind = DL_EXPR_VAR;
+    e->var_idx = var_idx;
+    return e;
+}
+
+dl_expr_t* dl_expr_binop(int op, dl_expr_t* left, dl_expr_t* right) {
+    dl_expr_t* e = dl_expr_alloc();
+    if (!e) return NULL;
+    e->kind = DL_EXPR_BINOP;
+    e->binop = op;
+    e->left = left;
+    e->right = right;
+    return e;
+}
+
+/* ========================================================================
+ * Assignment and builtin rule builders
+ * ======================================================================== */
+
+int dl_rule_add_assign(dl_rule_t* rule, int target_var, int op, dl_expr_t* expr) {
+    if (rule->n_body >= DL_MAX_BODY) return -1;
+    int idx = rule->n_body++;
+    dl_body_t* b = &rule->body[idx];
+    memset(b, 0, sizeof(dl_body_t));
+    b->type = DL_ASSIGN;
+    b->assign_var = target_var;
+    b->assign_expr = expr;
+    if (target_var + 1 > rule->n_vars) rule->n_vars = target_var + 1;
+    (void)op;  /* reserved for future assignment operators */
+    return idx;
+}
+
+int dl_rule_add_builtin(dl_rule_t* rule, int builtin_id, int arity) {
+    if (rule->n_body >= DL_MAX_BODY) return -1;
+    int idx = rule->n_body++;
+    dl_body_t* b = &rule->body[idx];
+    memset(b, 0, sizeof(dl_body_t));
+    b->type = DL_BUILTIN;
+    b->builtin_id = builtin_id;
+    b->arity = arity;
+    for (int i = 0; i < DL_MAX_ARITY; i++)
+        b->vars[i] = DL_CONST;
+    return idx;
+}
+
+/* ========================================================================
  * Stratification — topological sort on negation dependency graph
  * ======================================================================== */
 
@@ -323,6 +391,159 @@ int dl_stratify(dl_program_t* prog) {
  * atom separately, producing intermediate tables, and join them C-level.
  * This avoids column-name-collision issues in the graph-level join.
  * ======================================================================== */
+
+/* ========================================================================
+ * Expression evaluation — compute column from expression tree
+ * ======================================================================== */
+
+/* Evaluate an expression tree against the accumulator table.
+ * Returns a new owned I64 vector of length nrows. */
+static td_t* dl_eval_expr(dl_expr_t* expr, td_t* accum,
+                             int* var_col, int64_t nrows) {
+    if (!expr) return NULL;
+
+    switch (expr->kind) {
+    case DL_EXPR_CONST: {
+        td_t* col = td_vec_new(TD_I64, nrows);
+        if (!col || TD_IS_ERR(col)) return NULL;
+        col->len = nrows;
+        int64_t* d = (int64_t*)td_data(col);
+        for (int64_t r = 0; r < nrows; r++)
+            d[r] = expr->const_val;
+        return col;
+    }
+    case DL_EXPR_VAR: {
+        int ci = var_col[expr->var_idx];
+        td_t* src = td_table_get_col_idx(accum, ci);
+        if (!src) return NULL;
+        td_t* dst = td_vec_new(TD_I64, nrows);
+        if (!dst || TD_IS_ERR(dst)) return NULL;
+        dst->len = nrows;
+        memcpy(td_data(dst), td_data(src), (size_t)nrows * sizeof(int64_t));
+        return dst;
+    }
+    case DL_EXPR_BINOP: {
+        td_t* lv = dl_eval_expr(expr->left, accum, var_col, nrows);
+        td_t* rv = dl_eval_expr(expr->right, accum, var_col, nrows);
+        if (!lv || !rv) {
+            if (lv) td_release(lv);
+            if (rv) td_release(rv);
+            return NULL;
+        }
+        td_t* out = td_vec_new(TD_I64, nrows);
+        if (!out || TD_IS_ERR(out)) {
+            td_release(lv); td_release(rv); return NULL;
+        }
+        out->len = nrows;
+        int64_t* ld = (int64_t*)td_data(lv);
+        int64_t* rd = (int64_t*)td_data(rv);
+        int64_t* od = (int64_t*)td_data(out);
+        for (int64_t r = 0; r < nrows; r++) {
+            switch (expr->binop) {
+            case OP_ADD: od[r] = ld[r] + rd[r]; break;
+            case OP_SUB: od[r] = ld[r] - rd[r]; break;
+            case OP_MUL: od[r] = ld[r] * rd[r]; break;
+            case OP_DIV: od[r] = rd[r] != 0 ? ld[r] / rd[r] : 0; break;
+            default:     od[r] = 0; break;
+            }
+        }
+        td_release(lv);
+        td_release(rv);
+        return out;
+    }
+    }
+    return NULL;
+}
+
+/* Helper: append a new column to a table. Returns new owned table. */
+static td_t* dl_table_add_computed_col(td_t* tbl, td_t* new_col, const char* name) {
+    int64_t ncols = td_table_ncols(tbl);
+    td_t* out = td_table_new((int)(ncols + 1));
+    for (int64_t c = 0; c < ncols; c++) {
+        td_t* col = td_table_get_col_idx(tbl, c);
+        if (col)
+            out = td_table_add_col(out, td_table_col_name(tbl, c), col);
+    }
+    int64_t sym = td_sym_intern(name, strlen(name));
+    out = td_table_add_col(out, sym, new_col);
+    return out;
+}
+
+/* ========================================================================
+ * Builtin predicate evaluation helpers
+ * ======================================================================== */
+
+/* before(S, E, T): keep rows where T < S */
+static td_t* dl_builtin_before(td_t* tbl, int s_col, int t_col) {
+    if (!tbl || TD_IS_ERR(tbl) || td_table_nrows(tbl) == 0) return tbl;
+
+    int64_t nrows = td_table_nrows(tbl);
+    int64_t ncols = td_table_ncols(tbl);
+    int64_t* sd = (int64_t*)td_data(td_table_get_col_idx(tbl, s_col));
+    int64_t* td_d = (int64_t*)td_data(td_table_get_col_idx(tbl, t_col));
+
+    int64_t count = 0;
+    for (int64_t r = 0; r < nrows; r++)
+        if (td_d[r] < sd[r]) count++;
+
+    if (count == nrows) { td_retain(tbl); return tbl; }
+
+    td_t* out = td_table_new((int)ncols);
+    for (int64_t c = 0; c < ncols; c++) {
+        td_t* src = td_table_get_col_idx(tbl, c);
+        if (!src) continue;
+        td_t* dst = td_vec_new(src->type, count);
+        if (!dst || TD_IS_ERR(dst)) continue;
+        dst->len = count;
+        int64_t* src_d = (int64_t*)td_data(src);
+        int64_t* dst_d = (int64_t*)td_data(dst);
+        int64_t j = 0;
+        for (int64_t r = 0; r < nrows; r++)
+            if (td_d[r] < sd[r])
+                dst_d[j++] = src_d[r];
+        out = td_table_add_col(out, td_table_col_name(tbl, c), dst);
+        td_release(dst);
+    }
+    return out;
+}
+
+/* duration_since(T1, T2, D): compute D = T2 - T1, append as new column */
+static td_t* dl_builtin_duration_since(td_t* tbl, int t1_col, int t2_col,
+                                          const char* out_name) {
+    if (!tbl || TD_IS_ERR(tbl)) return tbl;
+    int64_t nrows = td_table_nrows(tbl);
+    int64_t* t1 = (int64_t*)td_data(td_table_get_col_idx(tbl, t1_col));
+    int64_t* t2 = (int64_t*)td_data(td_table_get_col_idx(tbl, t2_col));
+
+    td_t* col = td_vec_new(TD_I64, nrows);
+    if (!col || TD_IS_ERR(col)) { td_retain(tbl); return tbl; }
+    col->len = nrows;
+    int64_t* d = (int64_t*)td_data(col);
+    for (int64_t r = 0; r < nrows; r++)
+        d[r] = t2[r] - t1[r];
+
+    td_t* out = dl_table_add_computed_col(tbl, col, out_name);
+    td_release(col);
+    return out;
+}
+
+/* abs(X, Y): compute Y = |X|, append as new column */
+static td_t* dl_builtin_abs(td_t* tbl, int x_col, const char* out_name) {
+    if (!tbl || TD_IS_ERR(tbl)) return tbl;
+    int64_t nrows = td_table_nrows(tbl);
+    int64_t* xd = (int64_t*)td_data(td_table_get_col_idx(tbl, x_col));
+
+    td_t* col = td_vec_new(TD_I64, nrows);
+    if (!col || TD_IS_ERR(col)) { td_retain(tbl); return tbl; }
+    col->len = nrows;
+    int64_t* d = (int64_t*)td_data(col);
+    for (int64_t r = 0; r < nrows; r++)
+        d[r] = xd[r] < 0 ? -xd[r] : xd[r];
+
+    td_t* out = dl_table_add_computed_col(tbl, col, out_name);
+    td_release(col);
+    return out;
+}
 
 /* Helper: join two tables on specified column pairs. Returns new owned table.
  * left_cols[k] and right_cols[k] are column indices in left/right tables. */
@@ -635,6 +856,76 @@ td_op_t* dl_compile_rule(dl_program_t* prog, dl_rule_t* rule,
             td_t* result = dl_antijoin_tables(accum, rel->table, lkeys, rkeys, n_keys);
             td_release(accum);
             accum = result;
+        }
+    }
+
+    /* Process assignment literals: evaluate expressions and add columns */
+    for (int b = 0; b < rule->n_body; b++) {
+        dl_body_t* body = &rule->body[b];
+        if (body->type != DL_ASSIGN) continue;
+        if (!accum || TD_IS_ERR(accum)) break;
+
+        int64_t nrows = td_table_nrows(accum);
+        td_t* new_col = dl_eval_expr(body->assign_expr, accum, var_col, nrows);
+        if (!new_col || TD_IS_ERR(new_col)) continue;
+
+        int new_col_idx = (int)td_table_ncols(accum);
+        char colname[32];
+        snprintf(colname, sizeof(colname), "_a%d", body->assign_var);
+        td_t* new_accum = dl_table_add_computed_col(accum, new_col, colname);
+        td_release(new_col);
+        td_release(accum);
+        accum = new_accum;
+
+        var_bound[body->assign_var] = true;
+        var_col[body->assign_var] = new_col_idx;
+    }
+
+    /* Process builtin predicates */
+    for (int b = 0; b < rule->n_body; b++) {
+        dl_body_t* body = &rule->body[b];
+        if (body->type != DL_BUILTIN) continue;
+        if (!accum || TD_IS_ERR(accum)) break;
+
+        switch (body->builtin_id) {
+        case DL_BUILTIN_BEFORE: {
+            /* before(S, E, T): keep rows where T < S */
+            int s_col = var_col[body->vars[0]];
+            int t_col = var_col[body->vars[2]];
+            td_t* filtered = dl_builtin_before(accum, s_col, t_col);
+            td_release(accum);
+            accum = filtered;
+            break;
+        }
+        case DL_BUILTIN_DURATION_SINCE: {
+            /* duration_since(T1, T2, D): D = T2 - T1 */
+            int t1_col = var_col[body->vars[0]];
+            int t2_col = var_col[body->vars[1]];
+            int d_var = body->vars[2];
+            int new_idx = (int)td_table_ncols(accum);
+            char colname[32];
+            snprintf(colname, sizeof(colname), "_d%d", d_var);
+            td_t* result = dl_builtin_duration_since(accum, t1_col, t2_col, colname);
+            td_release(accum);
+            accum = result;
+            var_bound[d_var] = true;
+            var_col[d_var] = new_idx;
+            break;
+        }
+        case DL_BUILTIN_ABS: {
+            /* abs(X, Y): Y = |X| */
+            int x_col = var_col[body->vars[0]];
+            int y_var = body->vars[1];
+            int new_idx = (int)td_table_ncols(accum);
+            char colname[32];
+            snprintf(colname, sizeof(colname), "_abs%d", y_var);
+            td_t* result = dl_builtin_abs(accum, x_col, colname);
+            td_release(accum);
+            accum = result;
+            var_bound[y_var] = true;
+            var_col[y_var] = new_idx;
+            break;
+        }
         }
     }
 

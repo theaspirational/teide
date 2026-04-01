@@ -632,6 +632,353 @@ static MunitResult test_dl_stratify(const void* params, void* data) {
 }
 
 /* ======================================================================
+ * DL_ASSIGN tests
+ * ====================================================================== */
+
+/* Assignment with constant: result(X,Y,Z) :- edge(X,Y), Z = 1. */
+static MunitResult test_dl_assign_const(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+
+    /* edge(1,2), edge(2,3), edge(3,4) */
+    int64_t e0[] = {1, 2, 3};
+    int64_t e1[] = {2, 3, 4};
+    const int64_t* edata[] = {e0, e1};
+    td_t* edge_tbl = make_dl_table(2, edata, 3);
+    dl_add_edb(prog, "edge", edge_tbl, 2);
+
+    /* result(X, Y, Z) :- edge(X, Y), Z = 42. */
+    dl_rule_t rule;
+    dl_rule_init(&rule, "result", 3);
+    dl_rule_head_var(&rule, 0, 0);  /* X */
+    dl_rule_head_var(&rule, 1, 1);  /* Y */
+    dl_rule_head_var(&rule, 2, 2);  /* Z */
+
+    int b0 = dl_rule_add_atom(&rule, "edge", 2);
+    dl_body_set_var(&rule, b0, 0, 0);  /* X */
+    dl_body_set_var(&rule, b0, 1, 1);  /* Y */
+
+    dl_rule_add_assign(&rule, 2, DL_OP_EQ, dl_expr_const(42));
+    dl_add_rule(prog, &rule);
+
+    int rc = dl_eval(prog);
+    munit_assert_int(rc, ==, 0);
+
+    td_t* res = dl_query(prog, "result");
+    munit_assert_ptr_not_null(res);
+    munit_assert_false(TD_IS_ERR(res));
+    munit_assert_int(td_table_nrows(res), ==, 3);
+    munit_assert_int(td_table_ncols(res), ==, 3);
+
+    /* All Z values should be 42 */
+    int64_t* z_data = (int64_t*)td_data(td_table_get_col_idx(res, 2));
+    for (int64_t r = 0; r < 3; r++)
+        munit_assert_int(z_data[r], ==, 42);
+
+    td_release(edge_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Assignment with arithmetic: path(X,Y,Cost) :- edge(X,Y,W), Cost = W + 1. */
+static MunitResult test_dl_assign_arithmetic(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+
+    /* edge(1,2,10), edge(2,3,20), edge(3,4,30) — 3-column weighted edges */
+    int64_t e0[] = {1, 2, 3};
+    int64_t e1[] = {2, 3, 4};
+    int64_t e2[] = {10, 20, 30};
+    const int64_t* edata[] = {e0, e1, e2};
+    td_t* edge_tbl = make_dl_table(3, edata, 3);
+    dl_add_edb(prog, "edge", edge_tbl, 3);
+
+    /* path(X, Y, Cost) :- edge(X, Y, W), Cost = W + 1. */
+    /* Variables: X=0, Y=1, W=2, Cost=3 */
+    dl_rule_t rule;
+    dl_rule_init(&rule, "path", 3);
+    dl_rule_head_var(&rule, 0, 0);  /* X */
+    dl_rule_head_var(&rule, 1, 1);  /* Y */
+    dl_rule_head_var(&rule, 2, 3);  /* Cost */
+
+    int b0 = dl_rule_add_atom(&rule, "edge", 3);
+    dl_body_set_var(&rule, b0, 0, 0);  /* X */
+    dl_body_set_var(&rule, b0, 1, 1);  /* Y */
+    dl_body_set_var(&rule, b0, 2, 2);  /* W */
+
+    dl_rule_add_assign(&rule, 3, DL_OP_EQ,
+        dl_expr_binop(OP_ADD, dl_expr_var(2), dl_expr_const(1)));
+    dl_add_rule(prog, &rule);
+
+    int rc = dl_eval(prog);
+    munit_assert_int(rc, ==, 0);
+
+    td_t* res = dl_query(prog, "path");
+    munit_assert_ptr_not_null(res);
+    munit_assert_false(TD_IS_ERR(res));
+    munit_assert_int(td_table_nrows(res), ==, 3);
+
+    /* Cost values should be W + 1: 11, 21, 31 */
+    int64_t* cost = (int64_t*)td_data(td_table_get_col_idx(res, 2));
+    munit_assert_int(cost[0], ==, 11);
+    munit_assert_int(cost[1], ==, 21);
+    munit_assert_int(cost[2], ==, 31);
+
+    td_release(edge_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Multiple assignments in one rule:
+ * out(X, A, B) :- data(X, V), A = V * 2, B = V + 10. */
+static MunitResult test_dl_assign_multiple(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+
+    int64_t d0[] = {1, 2, 3};
+    int64_t d1[] = {5, 10, 15};
+    const int64_t* ddata[] = {d0, d1};
+    td_t* data_tbl = make_dl_table(2, ddata, 3);
+    dl_add_edb(prog, "data", data_tbl, 2);
+
+    /* out(X, A, B) :- data(X, V), A = V * 2, B = V + 10. */
+    /* Variables: X=0, V=1, A=2, B=3 */
+    dl_rule_t rule;
+    dl_rule_init(&rule, "out", 3);
+    dl_rule_head_var(&rule, 0, 0);  /* X */
+    dl_rule_head_var(&rule, 1, 2);  /* A */
+    dl_rule_head_var(&rule, 2, 3);  /* B */
+
+    int b0 = dl_rule_add_atom(&rule, "data", 2);
+    dl_body_set_var(&rule, b0, 0, 0);  /* X */
+    dl_body_set_var(&rule, b0, 1, 1);  /* V */
+
+    dl_rule_add_assign(&rule, 2, DL_OP_EQ,
+        dl_expr_binop(OP_MUL, dl_expr_var(1), dl_expr_const(2)));
+    dl_rule_add_assign(&rule, 3, DL_OP_EQ,
+        dl_expr_binop(OP_ADD, dl_expr_var(1), dl_expr_const(10)));
+    dl_add_rule(prog, &rule);
+
+    int rc = dl_eval(prog);
+    munit_assert_int(rc, ==, 0);
+
+    td_t* res = dl_query(prog, "out");
+    munit_assert_ptr_not_null(res);
+    munit_assert_false(TD_IS_ERR(res));
+    munit_assert_int(td_table_nrows(res), ==, 3);
+
+    int64_t* a_col = (int64_t*)td_data(td_table_get_col_idx(res, 1));
+    int64_t* b_col = (int64_t*)td_data(td_table_get_col_idx(res, 2));
+
+    /* A = V * 2: 10, 20, 30 */
+    munit_assert_int(a_col[0], ==, 10);
+    munit_assert_int(a_col[1], ==, 20);
+    munit_assert_int(a_col[2], ==, 30);
+
+    /* B = V + 10: 15, 20, 25 */
+    munit_assert_int(b_col[0], ==, 15);
+    munit_assert_int(b_col[1], ==, 20);
+    munit_assert_int(b_col[2], ==, 25);
+
+    td_release(data_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ======================================================================
+ * DL_BUILTIN tests
+ * ====================================================================== */
+
+/* td_before(S, E, T): filter events before intervals */
+static MunitResult test_dl_builtin_before(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+
+    /* interval(start, end): [10,20], [30,40], [50,60] */
+    int64_t i0[] = {10, 30, 50};
+    int64_t i1[] = {20, 40, 60};
+    const int64_t* idata[] = {i0, i1};
+    td_t* intv_tbl = make_dl_table(2, idata, 3);
+    dl_add_edb(prog, "interval", intv_tbl, 2);
+
+    /* event(time): 5, 25, 45, 65 */
+    int64_t t0[] = {5, 25, 45, 65};
+    const int64_t* tdata[] = {t0};
+    td_t* evt_tbl = make_dl_table(1, tdata, 4);
+    dl_add_edb(prog, "event", evt_tbl, 1);
+
+    /* before_event(S, E, T) :- interval(S, E), event(T), td_before(S, E, T). */
+    /* Variables: S=0, E=1, T=2 */
+    dl_rule_t rule;
+    dl_rule_init(&rule, "before_event", 3);
+    dl_rule_head_var(&rule, 0, 0);  /* S */
+    dl_rule_head_var(&rule, 1, 1);  /* E */
+    dl_rule_head_var(&rule, 2, 2);  /* T */
+
+    int b0 = dl_rule_add_atom(&rule, "interval", 2);
+    dl_body_set_var(&rule, b0, 0, 0);  /* S */
+    dl_body_set_var(&rule, b0, 1, 1);  /* E */
+
+    int b1 = dl_rule_add_atom(&rule, "event", 1);
+    dl_body_set_var(&rule, b1, 0, 2);  /* T */
+
+    int b2 = dl_rule_add_builtin(&rule, DL_BUILTIN_BEFORE, 3);
+    dl_body_set_var(&rule, b2, 0, 0);  /* S */
+    dl_body_set_var(&rule, b2, 1, 1);  /* E */
+    dl_body_set_var(&rule, b2, 2, 2);  /* T */
+
+    dl_add_rule(prog, &rule);
+
+    int rc = dl_eval(prog);
+    munit_assert_int(rc, ==, 0);
+
+    td_t* res = dl_query(prog, "before_event");
+    munit_assert_ptr_not_null(res);
+    munit_assert_false(TD_IS_ERR(res));
+
+    /* T < S combos from cross product:
+     * T=5:  < S=10 yes, < S=30 yes, < S=50 yes  → 3
+     * T=25: < S=10 no,  < S=30 yes, < S=50 yes  → 2
+     * T=45: < S=10 no,  < S=30 no,  < S=50 yes  → 1
+     * T=65: < S=10 no,  < S=30 no,  < S=50 no   → 0
+     * Total = 6 */
+    munit_assert_int(td_table_nrows(res), ==, 6);
+
+    td_release(intv_tbl);
+    td_release(evt_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* td_duration_since(T1, T2, D): compute duration */
+static MunitResult test_dl_builtin_duration(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+
+    /* events(t1, t2): (100,150), (200,350), (400,410) */
+    int64_t t1[] = {100, 200, 400};
+    int64_t t2[] = {150, 350, 410};
+    const int64_t* edata[] = {t1, t2};
+    td_t* evt_tbl = make_dl_table(2, edata, 3);
+    dl_add_edb(prog, "events", evt_tbl, 2);
+
+    /* dur(T1, T2, D) :- events(T1, T2), td_duration_since(T1, T2, D). */
+    /* Variables: T1=0, T2=1, D=2 */
+    dl_rule_t rule;
+    dl_rule_init(&rule, "dur", 3);
+    dl_rule_head_var(&rule, 0, 0);  /* T1 */
+    dl_rule_head_var(&rule, 1, 1);  /* T2 */
+    dl_rule_head_var(&rule, 2, 2);  /* D */
+
+    int b0 = dl_rule_add_atom(&rule, "events", 2);
+    dl_body_set_var(&rule, b0, 0, 0);
+    dl_body_set_var(&rule, b0, 1, 1);
+
+    int b1 = dl_rule_add_builtin(&rule, DL_BUILTIN_DURATION_SINCE, 3);
+    dl_body_set_var(&rule, b1, 0, 0);  /* T1 */
+    dl_body_set_var(&rule, b1, 1, 1);  /* T2 */
+    dl_body_set_var(&rule, b1, 2, 2);  /* D (output) */
+
+    dl_add_rule(prog, &rule);
+
+    int rc = dl_eval(prog);
+    munit_assert_int(rc, ==, 0);
+
+    td_t* res = dl_query(prog, "dur");
+    munit_assert_ptr_not_null(res);
+    munit_assert_false(TD_IS_ERR(res));
+    munit_assert_int(td_table_nrows(res), ==, 3);
+
+    /* D = T2 - T1: 50, 150, 10 */
+    int64_t* d_col = (int64_t*)td_data(td_table_get_col_idx(res, 2));
+    munit_assert_int(d_col[0], ==, 50);
+    munit_assert_int(d_col[1], ==, 150);
+    munit_assert_int(d_col[2], ==, 10);
+
+    td_release(evt_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* td_abs(X, Y): compute absolute value */
+static MunitResult test_dl_builtin_abs(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+
+    /* values(x): -5, 3, -10, 0, 7 */
+    int64_t v0[] = {-5, 3, -10, 0, 7};
+    const int64_t* vdata[] = {v0};
+    td_t* val_tbl = make_dl_table(1, vdata, 5);
+    dl_add_edb(prog, "values", val_tbl, 1);
+
+    /* absval(X, Y) :- values(X), td_abs(X, Y). */
+    /* Variables: X=0, Y=1 */
+    dl_rule_t rule;
+    dl_rule_init(&rule, "absval", 2);
+    dl_rule_head_var(&rule, 0, 0);  /* X */
+    dl_rule_head_var(&rule, 1, 1);  /* Y */
+
+    int b0 = dl_rule_add_atom(&rule, "values", 1);
+    dl_body_set_var(&rule, b0, 0, 0);  /* X */
+
+    int b1 = dl_rule_add_builtin(&rule, DL_BUILTIN_ABS, 2);
+    dl_body_set_var(&rule, b1, 0, 0);  /* X (input) */
+    dl_body_set_var(&rule, b1, 1, 1);  /* Y (output) */
+
+    dl_add_rule(prog, &rule);
+
+    int rc = dl_eval(prog);
+    munit_assert_int(rc, ==, 0);
+
+    td_t* res = dl_query(prog, "absval");
+    munit_assert_ptr_not_null(res);
+    munit_assert_false(TD_IS_ERR(res));
+    munit_assert_int(td_table_nrows(res), ==, 5);
+
+    /* Y = |X| for each row (order may differ after dedup) */
+    int64_t* x_col = (int64_t*)td_data(td_table_get_col_idx(res, 0));
+    int64_t* y_col = (int64_t*)td_data(td_table_get_col_idx(res, 1));
+    for (int64_t r = 0; r < 5; r++) {
+        int64_t expected = x_col[r] < 0 ? -x_col[r] : x_col[r];
+        munit_assert_int(y_col[r], ==, expected);
+    }
+
+    td_release(val_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ======================================================================
  * Suite
  * ====================================================================== */
 
@@ -647,6 +994,12 @@ static MunitTest tests[] = {
     { "/dl_stratified_negation", test_dl_stratified_negation, NULL, NULL, 0, NULL },
     { "/dl_convergence",       test_dl_convergence,       NULL, NULL, 0, NULL },
     { "/dl_stratify",          test_dl_stratify,          NULL, NULL, 0, NULL },
+    { "/dl_assign_const",      test_dl_assign_const,      NULL, NULL, 0, NULL },
+    { "/dl_assign_arithmetic", test_dl_assign_arithmetic, NULL, NULL, 0, NULL },
+    { "/dl_assign_multiple",   test_dl_assign_multiple,   NULL, NULL, 0, NULL },
+    { "/dl_builtin_before",    test_dl_builtin_before,    NULL, NULL, 0, NULL },
+    { "/dl_builtin_duration",  test_dl_builtin_duration,  NULL, NULL, 0, NULL },
+    { "/dl_builtin_abs",       test_dl_builtin_abs,       NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 
