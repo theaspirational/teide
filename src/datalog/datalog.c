@@ -317,148 +317,298 @@ int dl_stratify(dl_program_t* prog) {
 }
 
 /* ========================================================================
- * Rule compiler — compile a single rule body into a td_graph_t DAG
+ * Rule compiler — materializing approach
+ *
+ * Instead of building a single graph with joins, we execute each body
+ * atom separately, producing intermediate tables, and join them C-level.
+ * This avoids column-name-collision issues in the graph-level join.
  * ======================================================================== */
 
-/* Helper: map a Datalog variable to the graph node that currently binds it.
- * var_bindings[var_idx] = the td_op_t* scan node for that variable's column.
- * var_table_id[var_idx] = which registered table the binding came from. */
+/* Helper: join two tables on specified column pairs. Returns new owned table.
+ * left_cols[k] and right_cols[k] are column indices in left/right tables. */
+static td_t* dl_join_tables(td_t* left, td_t* right,
+                              const int* left_cols, const int* right_cols, int n_keys) {
+    if (!left || TD_IS_ERR(left) || !right || TD_IS_ERR(right)) return NULL;
+    if (td_table_nrows(left) == 0 || td_table_nrows(right) == 0) {
+        /* Return empty table with left+right non-key columns */
+        int64_t lnc = td_table_ncols(left);
+        int64_t rnc = td_table_ncols(right);
+        td_t* empty = td_table_new((int)(lnc + rnc));
+        for (int64_t c = 0; c < lnc; c++) {
+            td_t* col = td_table_get_col_idx(left, c);
+            if (!col) continue;
+            td_t* ec = td_vec_new(col->type, 0);
+            if (ec && !TD_IS_ERR(ec)) {
+                empty = td_table_add_col(empty, td_table_col_name(left, c), ec);
+                td_release(ec);
+            }
+        }
+        return empty;
+    }
+
+    /* Build unique column names for the join using a single graph */
+    td_graph_t* g = td_graph_new(NULL);
+    if (!g) return NULL;
+
+    /* Create copies with unique names */
+    int64_t lnc = td_table_ncols(left);
+    int64_t rnc = td_table_ncols(right);
+    td_t* ltbl = td_table_new((int)lnc);
+    for (int64_t c = 0; c < lnc; c++) {
+        td_t* col = td_table_get_col_idx(left, c);
+        if (!col) continue;
+        char name[32]; snprintf(name, sizeof(name), "L%d", (int)c);
+        int64_t sym = td_sym_intern(name, strlen(name));
+        ltbl = td_table_add_col(ltbl, sym, col);
+    }
+    td_t* rtbl = td_table_new((int)rnc);
+    for (int64_t c = 0; c < rnc; c++) {
+        td_t* col = td_table_get_col_idx(right, c);
+        if (!col) continue;
+        char name[32]; snprintf(name, sizeof(name), "R%d", (int)c);
+        int64_t sym = td_sym_intern(name, strlen(name));
+        rtbl = td_table_add_col(rtbl, sym, col);
+    }
+
+    uint16_t l_tid = td_graph_add_table(g, ltbl);
+    uint16_t r_tid = td_graph_add_table(g, rtbl);
+    td_op_t* l_op = td_const_table(g, ltbl);
+    td_op_t* r_op = td_const_table(g, rtbl);
+
+    td_op_t* lkeys[DL_MAX_ARITY];
+    td_op_t* rkeys[DL_MAX_ARITY];
+    for (int k = 0; k < n_keys; k++) {
+        char lname[32]; snprintf(lname, sizeof(lname), "L%d", left_cols[k]);
+        char rname[32]; snprintf(rname, sizeof(rname), "R%d", right_cols[k]);
+        lkeys[k] = td_scan_table(g, l_tid, lname);
+        rkeys[k] = td_scan_table(g, r_tid, rname);
+    }
+
+    td_op_t* join = td_join(g, l_op, lkeys, r_op, rkeys, (uint8_t)n_keys, 0);
+    td_t* result = td_execute(g, join);
+    td_graph_free(g);
+    td_release(ltbl);
+    td_release(rtbl);
+    return result;
+}
+
+/* Helper: antijoin two tables on specified column pairs. Returns new owned table. */
+static td_t* dl_antijoin_tables(td_t* left, td_t* right,
+                                  const int* left_cols, const int* right_cols, int n_keys) {
+    if (!left || TD_IS_ERR(left)) return left;
+    if (!right || TD_IS_ERR(right) || td_table_nrows(right) == 0) {
+        td_retain(left); return left;
+    }
+    if (td_table_nrows(left) == 0) { td_retain(left); return left; }
+
+    td_graph_t* g = td_graph_new(NULL);
+    if (!g) { td_retain(left); return left; }
+
+    int64_t lnc = td_table_ncols(left);
+    int64_t rnc = td_table_ncols(right);
+    td_t* ltbl = td_table_new((int)lnc);
+    for (int64_t c = 0; c < lnc; c++) {
+        td_t* col = td_table_get_col_idx(left, c);
+        if (!col) continue;
+        char name[32]; snprintf(name, sizeof(name), "L%d", (int)c);
+        ltbl = td_table_add_col(ltbl, td_sym_intern(name, strlen(name)), col);
+    }
+    td_t* rtbl = td_table_new((int)rnc);
+    for (int64_t c = 0; c < rnc; c++) {
+        td_t* col = td_table_get_col_idx(right, c);
+        if (!col) continue;
+        char name[32]; snprintf(name, sizeof(name), "R%d", (int)c);
+        rtbl = td_table_add_col(rtbl, td_sym_intern(name, strlen(name)), col);
+    }
+
+    uint16_t l_tid = td_graph_add_table(g, ltbl);
+    uint16_t r_tid = td_graph_add_table(g, rtbl);
+    td_op_t* l_op = td_const_table(g, ltbl);
+    td_op_t* r_op = td_const_table(g, rtbl);
+
+    td_op_t* lkeys[DL_MAX_ARITY];
+    td_op_t* rkeys[DL_MAX_ARITY];
+    for (int k = 0; k < n_keys; k++) {
+        char lname[32]; snprintf(lname, sizeof(lname), "L%d", left_cols[k]);
+        char rname[32]; snprintf(rname, sizeof(rname), "R%d", right_cols[k]);
+        lkeys[k] = td_scan_table(g, l_tid, lname);
+        rkeys[k] = td_scan_table(g, r_tid, rname);
+    }
+
+    td_op_t* aj = td_antijoin(g, l_op, lkeys, r_op, rkeys, (uint8_t)n_keys);
+    td_t* result = td_execute(g, aj);
+    td_graph_free(g);
+    td_release(ltbl);
+    td_release(rtbl);
+    return result;
+}
+
+/* Helper: filter a table to rows where column col_idx == value */
+static td_t* dl_filter_eq(td_t* tbl, int col_idx, int64_t value) {
+    if (!tbl || TD_IS_ERR(tbl) || td_table_nrows(tbl) == 0) return tbl;
+
+    td_t* col = td_table_get_col_idx(tbl, col_idx);
+    if (!col) return tbl;
+
+    int64_t nrows = td_table_nrows(tbl);
+    int64_t ncols = td_table_ncols(tbl);
+    int64_t* data = (int64_t*)td_data(col);
+
+    /* Count matching rows */
+    int64_t count = 0;
+    for (int64_t r = 0; r < nrows; r++)
+        if (data[r] == value) count++;
+
+    if (count == nrows) { td_retain(tbl); return tbl; }
+
+    /* Build filtered table */
+    td_t* out = td_table_new((int)ncols);
+    for (int64_t c = 0; c < ncols; c++) {
+        td_t* src = td_table_get_col_idx(tbl, c);
+        if (!src) continue;
+        td_t* dst = td_vec_new(src->type, count);
+        if (!dst || TD_IS_ERR(dst)) continue;
+        dst->len = count;
+        int64_t* src_d = (int64_t*)td_data(src);
+        int64_t* dst_d = (int64_t*)td_data(dst);
+        int64_t j = 0;
+        for (int64_t r = 0; r < nrows; r++) {
+            if (data[r] == value)
+                dst_d[j++] = src_d[r];
+        }
+        out = td_table_add_col(out, td_table_col_name(tbl, c), dst);
+        td_release(dst);
+    }
+    return out;
+}
+
+/* Helper: project table to selected columns, producing output with head relation naming */
+static td_t* dl_project(td_t* tbl, const int* col_indices, int n_out,
+                          dl_rel_t* head_rel) {
+    if (!tbl || TD_IS_ERR(tbl)) return tbl;
+    int64_t nrows = td_table_nrows(tbl);
+    td_t* out = td_table_new(n_out);
+    for (int c = 0; c < n_out; c++) {
+        int src_idx = col_indices[c];
+        if (src_idx < 0) continue;  /* constant — handled separately */
+        td_t* src = td_table_get_col_idx(tbl, src_idx);
+        if (!src) continue;
+        td_t* dst = td_vec_new(src->type, nrows);
+        if (!dst || TD_IS_ERR(dst)) continue;
+        dst->len = nrows;
+        memcpy(td_data(dst), td_data(src), (size_t)nrows * sizeof(int64_t));
+        out = td_table_add_col(out, head_rel->col_names[c], dst);
+        td_release(dst);
+    }
+    return out;
+}
 
 td_op_t* dl_compile_rule(dl_program_t* prog, dl_rule_t* rule,
                           int delta_pos, td_graph_t* g) {
-    /* Track variable bindings: var -> (table_id, column_name) */
-    td_op_t* var_scan[DL_MAX_ARITY * DL_MAX_BODY]; /* scan node per variable */
-    uint16_t var_tid[DL_MAX_ARITY * DL_MAX_BODY];   /* table id per variable */
-    td_op_t* var_tbl[DL_MAX_ARITY * DL_MAX_BODY];   /* const_table node per variable */
+    /* Materializing approach: execute body atoms one at a time.
+     *
+     * For each positive body atom, we get the relation table and apply
+     * constant filters. Then join with the accumulated result.
+     * Variable bindings track which column in the accumulated table
+     * holds each variable's value.
+     *
+     * var_col[v] = column index in `accum` table for variable v.
+     */
+    int var_col[DL_MAX_ARITY * DL_MAX_BODY];  /* column index in accum per variable */
     bool var_bound[DL_MAX_ARITY * DL_MAX_BODY];
     memset(var_bound, 0, sizeof(var_bound));
-    memset(var_scan, 0, sizeof(var_scan));
-    memset(var_tid, 0, sizeof(var_tid));
-    memset(var_tbl, 0, sizeof(var_tbl));
+    memset(var_col, -1, sizeof(var_col));
 
-    /* Process positive body atoms: build scans and joins */
-    td_op_t* current = NULL;  /* current pipeline output node */
-    uint16_t current_tid = 0;
+    td_t* accum = NULL;  /* accumulated result table */
 
     for (int b = 0; b < rule->n_body; b++) {
         dl_body_t* body = &rule->body[b];
         if (body->type != DL_POS) continue;
 
-        /* Find the relation */
         int rel_idx = dl_find_rel(prog, body->pred);
-        if (rel_idx < 0) return NULL;
+        if (rel_idx < 0) { if (accum) td_release(accum); return NULL; }
         dl_rel_t* rel = &prog->rels[rel_idx];
-
-        /* Use delta relation at delta_pos, full relation otherwise */
-        td_t* scan_table;
-        if (b == delta_pos) {
-            /* For semi-naive: the delta relation is stored temporarily
-             * in the next table slot. We'll pass it via the table registry. */
-            scan_table = rel->table;  /* caller replaces with delta */
-        } else {
-            scan_table = rel->table;
-        }
-
-        /* Build a body-atom-specific copy of the table with unique column names
-         * "b{body_idx}__c{col}" to avoid collisions when the same relation
-         * appears multiple times in a rule body. */
-        td_t* body_tbl = td_table_new(body->arity);
-        for (int c = 0; c < body->arity; c++) {
-            td_t* col = td_table_get_col_idx(scan_table, c);
-            if (!col) continue;
-            char col_name[80];
-            snprintf(col_name, sizeof(col_name), "b%d__c%d", b, c);
-            int64_t col_sym = td_sym_intern(col_name, strlen(col_name));
-            body_tbl = td_table_add_col(body_tbl, col_sym, col);
-        }
-
-        /* Register the body-specific table in graph */
-        uint16_t tid = td_graph_add_table(g, body_tbl);
-
-        /* Create scan nodes with body-unique column names */
-        td_op_t* col_scans[DL_MAX_ARITY];
-        for (int c = 0; c < body->arity; c++) {
-            char col_name[80];
-            snprintf(col_name, sizeof(col_name), "b%d__c%d", b, c);
-            col_scans[c] = td_scan_table(g, tid, col_name);
-        }
-        /* Replace scan_table with the body-specific table for const_table */
-        scan_table = body_tbl;
+        td_t* body_tbl = rel->table;
+        td_retain(body_tbl);
 
         /* Apply constant filters */
         for (int c = 0; c < body->arity; c++) {
             if (body->vars[c] == DL_CONST) {
-                td_op_t* const_node = td_const_i64(g, body->const_vals[c]);
-                td_op_t* eq_node = td_eq(g, col_scans[c], const_node);
-                td_op_t* filt = td_filter(g, col_scans[c], eq_node);
-                (void)filt;
+                td_t* filtered = dl_filter_eq(body_tbl, c, body->const_vals[c]);
+                td_release(body_tbl);
+                body_tbl = filtered;
             }
         }
 
-        /* Bind variables and track join keys */
-        if (current == NULL) {
-            /* First body atom — just record bindings */
-            td_op_t* const_tbl = td_const_table(g, scan_table);
+        if (accum == NULL) {
+            /* First body atom: accum = body_tbl */
+            accum = body_tbl;
+            /* Bind variables to column indices */
             for (int c = 0; c < body->arity; c++) {
                 int v = body->vars[c];
                 if (v == DL_CONST) continue;
                 if (!var_bound[v]) {
                     var_bound[v] = true;
-                    var_scan[v] = col_scans[c];
-                    var_tid[v] = tid;
-                    var_tbl[v] = const_tbl;
+                    var_col[v] = c;
                 }
             }
-            current = const_tbl;
-            current_tid = tid;
         } else {
-            /* Subsequent body atom — need to join with current */
-            td_op_t* right_tbl = td_const_table(g, scan_table);
-
-            /* Find shared variables = join keys */
-            td_op_t* lkeys[DL_MAX_ARITY];
-            td_op_t* rkeys[DL_MAX_ARITY];
-            uint8_t n_join_keys = 0;
-
+            /* Join accum with body_tbl on shared variables */
+            int lkeys[DL_MAX_ARITY], rkeys[DL_MAX_ARITY];
+            int n_jk = 0;
             for (int c = 0; c < body->arity; c++) {
                 int v = body->vars[c];
                 if (v == DL_CONST) continue;
                 if (var_bound[v]) {
-                    /* Shared variable — this is a join key */
-                    lkeys[n_join_keys] = var_scan[v];
-                    rkeys[n_join_keys] = col_scans[c];
-                    n_join_keys++;
+                    lkeys[n_jk] = var_col[v];
+                    rkeys[n_jk] = c;
+                    n_jk++;
                 }
             }
 
-            if (n_join_keys > 0) {
-                current = td_join(g, current, lkeys, right_tbl, rkeys,
-                                  n_join_keys, 0 /* inner join */);
+            td_t* joined;
+            if (n_jk > 0) {
+                joined = dl_join_tables(accum, body_tbl, lkeys, rkeys, n_jk);
             } else {
-                /* Cross product (no shared vars) — still join with no keys.
-                 * Use a dummy constant key that always matches. */
-                td_op_t* l_one = td_const_i64(g, 1);
-                td_op_t* r_one = td_const_i64(g, 1);
-                td_op_t* lk[] = { l_one };
-                td_op_t* rk[] = { r_one };
-                current = td_join(g, current, lk, right_tbl, rk, 1, 0);
+                /* Cross product: use dummy key */
+                int lk0 = 0, rk0 = 0;
+                joined = dl_join_tables(accum, body_tbl, &lk0, &rk0, 0);
             }
 
-            /* Bind any new variables from this atom */
+            int64_t accum_ncols = td_table_ncols(accum);
+            td_release(accum);
+            td_release(body_tbl);
+            accum = joined;
+
+            /* Bind new variables: their columns come after left columns in join output.
+             * Join output = [all left cols] + [non-key right cols].
+             * We need to track which right columns appear in output. */
+            int right_col_map[DL_MAX_ARITY]; /* right col c -> output col idx */
+            int out_idx = (int)accum_ncols;
+            for (int c = 0; c < body->arity; c++) {
+                bool is_key = false;
+                for (int k = 0; k < n_jk; k++) {
+                    if (rkeys[k] == c) { is_key = true; break; }
+                }
+                if (is_key) {
+                    right_col_map[c] = -1;  /* key col not in output */
+                } else {
+                    right_col_map[c] = out_idx++;
+                }
+            }
+
             for (int c = 0; c < body->arity; c++) {
                 int v = body->vars[c];
                 if (v == DL_CONST) continue;
                 if (!var_bound[v]) {
                     var_bound[v] = true;
-                    var_scan[v] = col_scans[c];
-                    var_tid[v] = tid;
-                    var_tbl[v] = right_tbl;
+                    var_col[v] = right_col_map[c];
                 }
             }
         }
     }
 
-    if (!current) return NULL;
+    if (!accum) return NULL;
 
     /* Process negated atoms: antijoin */
     for (int b = 0; b < rule->n_body; b++) {
@@ -466,91 +616,50 @@ td_op_t* dl_compile_rule(dl_program_t* prog, dl_rule_t* rule,
         if (body->type != DL_NEG) continue;
 
         int rel_idx = dl_find_rel(prog, body->pred);
-        if (rel_idx < 0) return NULL;
+        if (rel_idx < 0) { td_release(accum); return NULL; }
         dl_rel_t* rel = &prog->rels[rel_idx];
 
-        /* Build body-specific table with unique column names */
-        td_t* neg_tbl = td_table_new(body->arity);
-        for (int c = 0; c < body->arity; c++) {
-            td_t* col = td_table_get_col_idx(rel->table, c);
-            if (!col) continue;
-            char col_name[80];
-            snprintf(col_name, sizeof(col_name), "b%d__c%d", b, c);
-            int64_t col_sym = td_sym_intern(col_name, strlen(col_name));
-            neg_tbl = td_table_add_col(neg_tbl, col_sym, col);
-        }
-
-        uint16_t tid = td_graph_add_table(g, neg_tbl);
-        td_op_t* right_tbl = td_const_table(g, neg_tbl);
-
-        td_op_t* col_scans[DL_MAX_ARITY];
-        for (int c = 0; c < body->arity; c++) {
-            char col_name[80];
-            snprintf(col_name, sizeof(col_name), "b%d__c%d", b, c);
-            col_scans[c] = td_scan_table(g, tid, col_name);
-        }
-
-        /* Build antijoin keys: shared variables between current and negated atom */
-        td_op_t* lkeys[DL_MAX_ARITY];
-        td_op_t* rkeys[DL_MAX_ARITY];
-        uint8_t n_keys = 0;
-
+        int lkeys[DL_MAX_ARITY], rkeys[DL_MAX_ARITY];
+        int n_keys = 0;
         for (int c = 0; c < body->arity; c++) {
             int v = body->vars[c];
             if (v == DL_CONST) continue;
             if (var_bound[v]) {
-                lkeys[n_keys] = var_scan[v];
-                rkeys[n_keys] = col_scans[c];
+                lkeys[n_keys] = var_col[v];
+                rkeys[n_keys] = c;
                 n_keys++;
             }
         }
 
         if (n_keys > 0) {
-            current = td_antijoin(g, current, lkeys, right_tbl, rkeys, n_keys);
+            td_t* result = dl_antijoin_tables(accum, rel->table, lkeys, rkeys, n_keys);
+            td_release(accum);
+            accum = result;
         }
     }
 
-    /* Process comparisons: filter */
-    for (int b = 0; b < rule->n_body; b++) {
-        dl_body_t* body = &rule->body[b];
-        if (body->type != DL_CMP) continue;
+    /* Project to head variables */
+    int head_idx = dl_find_rel(prog, rule->head_pred);
+    if (head_idx < 0) { td_release(accum); return NULL; }
+    dl_rel_t* head_rel = &prog->rels[head_idx];
 
-        td_op_t* lhs = var_scan[body->cmp_lhs];
-        td_op_t* rhs;
-        if (body->cmp_rhs == DL_CONST)
-            rhs = td_const_i64(g, body->cmp_const);
-        else
-            rhs = var_scan[body->cmp_rhs];
-
-        if (!lhs || !rhs) continue;
-
-        td_op_t* cmp_node = NULL;
-        switch (body->cmp_op) {
-            case DL_CMP_EQ: cmp_node = td_eq(g, lhs, rhs); break;
-            case DL_CMP_NE: cmp_node = td_ne(g, lhs, rhs); break;
-            case DL_CMP_LT: cmp_node = td_lt(g, lhs, rhs); break;
-            case DL_CMP_LE: cmp_node = td_le(g, lhs, rhs); break;
-            case DL_CMP_GT: cmp_node = td_gt(g, lhs, rhs); break;
-            case DL_CMP_GE: cmp_node = td_ge(g, lhs, rhs); break;
-            default: continue;
-        }
-        if (cmp_node)
-            current = td_filter(g, current, cmp_node);
-    }
-
-    /* Project to head variables using td_select */
-    td_op_t* head_cols[DL_MAX_ARITY];
+    int proj_cols[DL_MAX_ARITY];
     for (int c = 0; c < rule->head_arity; c++) {
         int v = rule->head_vars[c];
         if (v == DL_CONST) {
-            head_cols[c] = td_const_i64(g, rule->head_consts[c]);
+            proj_cols[c] = -1;
         } else {
-            head_cols[c] = var_scan[v];
+            proj_cols[c] = var_col[v];
         }
     }
 
-    td_op_t* projected = td_select(g, current, head_cols, (uint8_t)rule->head_arity);
-    return projected;
+    td_t* projected = dl_project(accum, proj_cols, rule->head_arity, head_rel);
+    td_release(accum);
+
+    /* Store result in the graph as a const_table so the caller can execute */
+    td_op_t* result_node = td_const_table(g, projected);
+    td_release(projected);
+    return result_node;
 }
 
 /* ========================================================================
