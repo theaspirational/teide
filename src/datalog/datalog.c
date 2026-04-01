@@ -299,6 +299,21 @@ int dl_rule_add_builtin(dl_rule_t* rule, int builtin_id, int arity) {
     return idx;
 }
 
+int dl_rule_add_interval(dl_rule_t* rule, int fact_var, int start_var, int end_var) {
+    if (rule->n_body >= DL_MAX_BODY) return -1;
+    int idx = rule->n_body++;
+    dl_body_t* b = &rule->body[idx];
+    memset(b, 0, sizeof(dl_body_t));
+    b->type = DL_INTERVAL;
+    b->interval_fact_var = fact_var;
+    b->interval_start_var = start_var;
+    b->interval_end_var = end_var;
+    if (fact_var + 1 > rule->n_vars) rule->n_vars = fact_var + 1;
+    if (start_var + 1 > rule->n_vars) rule->n_vars = start_var + 1;
+    if (end_var + 1 > rule->n_vars) rule->n_vars = end_var + 1;
+    return idx;
+}
+
 /* ========================================================================
  * Stratification — topological sort on negation dependency graph
  * ======================================================================== */
@@ -831,102 +846,180 @@ td_op_t* dl_compile_rule(dl_program_t* prog, dl_rule_t* rule,
 
     if (!accum) return NULL;
 
-    /* Process negated atoms: antijoin */
+    /* Process non-join body literals in declared order.
+     * This ensures dependencies between literals (e.g., interval bind before
+     * assignment, assignment before comparison) are respected. */
     for (int b = 0; b < rule->n_body; b++) {
         dl_body_t* body = &rule->body[b];
-        if (body->type != DL_NEG) continue;
+        if (body->type == DL_POS) continue;  /* already processed above */
+        if (!accum || TD_IS_ERR(accum)) break;
 
-        int rel_idx = dl_find_rel(prog, body->pred);
-        if (rel_idx < 0) { td_release(accum); return NULL; }
-        dl_rel_t* rel = &prog->rels[rel_idx];
+        switch (body->type) {
+        case DL_NEG: {
+            int rel_idx = dl_find_rel(prog, body->pred);
+            if (rel_idx < 0) { td_release(accum); return NULL; }
+            dl_rel_t* rel = &prog->rels[rel_idx];
 
-        int lkeys[DL_MAX_ARITY], rkeys[DL_MAX_ARITY];
-        int n_keys = 0;
-        for (int c = 0; c < body->arity; c++) {
-            int v = body->vars[c];
-            if (v == DL_CONST) continue;
-            if (var_bound[v]) {
-                lkeys[n_keys] = var_col[v];
-                rkeys[n_keys] = c;
-                n_keys++;
+            int lkeys[DL_MAX_ARITY], rkeys[DL_MAX_ARITY];
+            int n_keys = 0;
+            for (int c = 0; c < body->arity; c++) {
+                int v = body->vars[c];
+                if (v == DL_CONST) continue;
+                if (var_bound[v]) {
+                    lkeys[n_keys] = var_col[v];
+                    rkeys[n_keys] = c;
+                    n_keys++;
+                }
             }
-        }
 
-        if (n_keys > 0) {
-            td_t* result = dl_antijoin_tables(accum, rel->table, lkeys, rkeys, n_keys);
-            td_release(accum);
-            accum = result;
-        }
-    }
-
-    /* Process assignment literals: evaluate expressions and add columns */
-    for (int b = 0; b < rule->n_body; b++) {
-        dl_body_t* body = &rule->body[b];
-        if (body->type != DL_ASSIGN) continue;
-        if (!accum || TD_IS_ERR(accum)) break;
-
-        int64_t nrows = td_table_nrows(accum);
-        td_t* new_col = dl_eval_expr(body->assign_expr, accum, var_col, nrows);
-        if (!new_col || TD_IS_ERR(new_col)) continue;
-
-        int new_col_idx = (int)td_table_ncols(accum);
-        char colname[32];
-        snprintf(colname, sizeof(colname), "_a%d", body->assign_var);
-        td_t* new_accum = dl_table_add_computed_col(accum, new_col, colname);
-        td_release(new_col);
-        td_release(accum);
-        accum = new_accum;
-
-        var_bound[body->assign_var] = true;
-        var_col[body->assign_var] = new_col_idx;
-    }
-
-    /* Process builtin predicates */
-    for (int b = 0; b < rule->n_body; b++) {
-        dl_body_t* body = &rule->body[b];
-        if (body->type != DL_BUILTIN) continue;
-        if (!accum || TD_IS_ERR(accum)) break;
-
-        switch (body->builtin_id) {
-        case DL_BUILTIN_BEFORE: {
-            /* before(S, E, T): keep rows where T < S */
-            int s_col = var_col[body->vars[0]];
-            int t_col = var_col[body->vars[2]];
-            td_t* filtered = dl_builtin_before(accum, s_col, t_col);
-            td_release(accum);
-            accum = filtered;
+            if (n_keys > 0) {
+                td_t* result = dl_antijoin_tables(accum, rel->table, lkeys, rkeys, n_keys);
+                td_release(accum);
+                accum = result;
+            }
             break;
         }
-        case DL_BUILTIN_DURATION_SINCE: {
-            /* duration_since(T1, T2, D): D = T2 - T1 */
-            int t1_col = var_col[body->vars[0]];
-            int t2_col = var_col[body->vars[1]];
-            int d_var = body->vars[2];
-            int new_idx = (int)td_table_ncols(accum);
+
+        case DL_ASSIGN: {
+            int64_t nrows = td_table_nrows(accum);
+            td_t* new_col = dl_eval_expr(body->assign_expr, accum, var_col, nrows);
+            if (!new_col || TD_IS_ERR(new_col)) break;
+
+            int new_col_idx = (int)td_table_ncols(accum);
             char colname[32];
-            snprintf(colname, sizeof(colname), "_d%d", d_var);
-            td_t* result = dl_builtin_duration_since(accum, t1_col, t2_col, colname);
+            snprintf(colname, sizeof(colname), "_a%d", body->assign_var);
+            td_t* new_accum = dl_table_add_computed_col(accum, new_col, colname);
+            td_release(new_col);
             td_release(accum);
-            accum = result;
-            var_bound[d_var] = true;
-            var_col[d_var] = new_idx;
+            accum = new_accum;
+
+            var_bound[body->assign_var] = true;
+            var_col[body->assign_var] = new_col_idx;
             break;
         }
-        case DL_BUILTIN_ABS: {
-            /* abs(X, Y): Y = |X| */
-            int x_col = var_col[body->vars[0]];
-            int y_var = body->vars[1];
-            int new_idx = (int)td_table_ncols(accum);
-            char colname[32];
-            snprintf(colname, sizeof(colname), "_abs%d", y_var);
-            td_t* result = dl_builtin_abs(accum, x_col, colname);
-            td_release(accum);
-            accum = result;
-            var_bound[y_var] = true;
-            var_col[y_var] = new_idx;
+
+        case DL_BUILTIN: {
+            switch (body->builtin_id) {
+            case DL_BUILTIN_BEFORE: {
+                int s_col = var_col[body->vars[0]];
+                int t_col = var_col[body->vars[2]];
+                td_t* filtered = dl_builtin_before(accum, s_col, t_col);
+                td_release(accum);
+                accum = filtered;
+                break;
+            }
+            case DL_BUILTIN_DURATION_SINCE: {
+                int t1_col = var_col[body->vars[0]];
+                int t2_col = var_col[body->vars[1]];
+                int d_var = body->vars[2];
+                int new_idx = (int)td_table_ncols(accum);
+                char colname[32];
+                snprintf(colname, sizeof(colname), "_d%d", d_var);
+                td_t* result = dl_builtin_duration_since(accum, t1_col, t2_col, colname);
+                td_release(accum);
+                accum = result;
+                var_bound[d_var] = true;
+                var_col[d_var] = new_idx;
+                break;
+            }
+            case DL_BUILTIN_ABS: {
+                int x_col = var_col[body->vars[0]];
+                int y_var = body->vars[1];
+                int new_idx = (int)td_table_ncols(accum);
+                char colname[32];
+                snprintf(colname, sizeof(colname), "_abs%d", y_var);
+                td_t* result = dl_builtin_abs(accum, x_col, colname);
+                td_release(accum);
+                accum = result;
+                var_bound[y_var] = true;
+                var_col[y_var] = new_idx;
+                break;
+            }
+            }
             break;
         }
+
+        case DL_CMP: {
+            if (body->cmp_lhs_expr || body->cmp_rhs_expr) break; /* handled by CMP_EXPR path */
+
+            int64_t nrows = td_table_nrows(accum);
+            if (nrows == 0) break;
+
+            int lhs_col = var_col[body->cmp_lhs];
+            td_t* lhs_vec = td_table_get_col_idx(accum, lhs_col);
+            if (!lhs_vec) break;
+            int64_t* lhs_data = (int64_t*)td_data(lhs_vec);
+
+            int64_t rhs_const = body->cmp_const;
+            int64_t* rhs_data = NULL;
+            if (body->cmp_rhs != DL_CONST) {
+                int rhs_col = var_col[body->cmp_rhs];
+                td_t* rhs_vec = td_table_get_col_idx(accum, rhs_col);
+                if (!rhs_vec) break;
+                rhs_data = (int64_t*)td_data(rhs_vec);
+            }
+
+            /* Build boolean mask */
+            td_t* mask_block = td_alloc((size_t)nrows * sizeof(bool));
+            if (!mask_block) break;
+            bool* mask = (bool*)td_data(mask_block);
+            int64_t count = 0;
+            for (int64_t r = 0; r < nrows; r++) {
+                int64_t rv = rhs_data ? rhs_data[r] : rhs_const;
+                bool pass = false;
+                switch (body->cmp_op) {
+                case DL_CMP_EQ: pass = (lhs_data[r] == rv); break;
+                case DL_CMP_NE: pass = (lhs_data[r] != rv); break;
+                case DL_CMP_LT: pass = (lhs_data[r] <  rv); break;
+                case DL_CMP_LE: pass = (lhs_data[r] <= rv); break;
+                case DL_CMP_GT: pass = (lhs_data[r] >  rv); break;
+                case DL_CMP_GE: pass = (lhs_data[r] >= rv); break;
+                }
+                mask[r] = pass;
+                if (pass) count++;
+            }
+
+            if (count == nrows) {
+                td_free(mask_block);
+                break;  /* all rows pass */
+            }
+
+            /* Build filtered table */
+            int64_t ncols = td_table_ncols(accum);
+            td_t* out = td_table_new((int)ncols);
+            for (int64_t c = 0; c < ncols; c++) {
+                td_t* src = td_table_get_col_idx(accum, c);
+                if (!src) continue;
+                td_t* dst = td_vec_new(src->type, count);
+                if (!dst || TD_IS_ERR(dst)) continue;
+                dst->len = count;
+                int64_t* src_d = (int64_t*)td_data(src);
+                int64_t* dst_d = (int64_t*)td_data(dst);
+                int64_t j = 0;
+                for (int64_t r = 0; r < nrows; r++)
+                    if (mask[r]) dst_d[j++] = src_d[r];
+                out = td_table_add_col(out, td_table_col_name(accum, c), dst);
+                td_release(dst);
+            }
+            td_free(mask_block);
+            td_release(accum);
+            accum = out;
+            break;
         }
+
+        case DL_INTERVAL: {
+            int fact_col = var_col[body->interval_fact_var];
+            int start_col = fact_col;
+            int end_col = fact_col + 1;
+
+            var_bound[body->interval_start_var] = true;
+            var_col[body->interval_start_var] = start_col;
+
+            var_bound[body->interval_end_var] = true;
+            var_col[body->interval_end_var] = end_col;
+            break;
+        }
+        } /* switch */
     }
 
     /* Project to head variables */

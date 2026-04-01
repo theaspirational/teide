@@ -979,6 +979,130 @@ static MunitResult test_dl_builtin_abs(const void* params, void* data) {
 }
 
 /* ======================================================================
+ * DL_INTERVAL tests
+ * ====================================================================== */
+
+/* Interval bind: decompose a fact with [start, end] columns.
+ * time_range(start, end): [10,20], [30,40], [50,60]
+ * span(S, E) :- time_range(F) @[S, E].
+ * The interval bind decomposes F (pointing at column 0) into S=col0, E=col1. */
+static MunitResult test_dl_interval_basic(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+
+    /* time_range(start, end): [10,20], [30,40], [50,60] */
+    int64_t s0[] = {10, 30, 50};
+    int64_t s1[] = {20, 40, 60};
+    const int64_t* sdata[] = {s0, s1};
+    td_t* tr_tbl = make_dl_table(2, sdata, 3);
+    dl_add_edb(prog, "time_range", tr_tbl, 2);
+
+    /* span(S, E) :- time_range(F, _), F @[S, E].
+     * Variables: F=0, Dummy=1, S=2, E=3
+     * F binds to column 0 of time_range, _ binds to column 1.
+     * Interval decomposes: S = col[F] = col0, E = col[F]+1 = col1. */
+    dl_rule_t rule;
+    dl_rule_init(&rule, "span", 2);
+    dl_rule_head_var(&rule, 0, 2);  /* S */
+    dl_rule_head_var(&rule, 1, 3);  /* E */
+
+    int b0 = dl_rule_add_atom(&rule, "time_range", 2);
+    dl_body_set_var(&rule, b0, 0, 0);  /* F */
+    dl_body_set_var(&rule, b0, 1, 1);  /* dummy end col */
+
+    dl_rule_add_interval(&rule, 0, 2, 3);  /* F @[S, E] */
+    dl_add_rule(prog, &rule);
+
+    int rc = dl_eval(prog);
+    munit_assert_int(rc, ==, 0);
+
+    td_t* res = dl_query(prog, "span");
+    munit_assert_ptr_not_null(res);
+    munit_assert_false(TD_IS_ERR(res));
+    munit_assert_int(td_table_nrows(res), ==, 3);
+    munit_assert_int(td_table_ncols(res), ==, 2);
+
+    /* S should be start values, E should be end values */
+    int64_t* s_col = (int64_t*)td_data(td_table_get_col_idx(res, 0));
+    int64_t* e_col = (int64_t*)td_data(td_table_get_col_idx(res, 1));
+    munit_assert_int(s_col[0], ==, 10);
+    munit_assert_int(s_col[1], ==, 30);
+    munit_assert_int(s_col[2], ==, 50);
+    munit_assert_int(e_col[0], ==, 20);
+    munit_assert_int(e_col[1], ==, 40);
+    munit_assert_int(e_col[2], ==, 60);
+
+    td_release(tr_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* Interval bind combined with filter:
+ * long_span(S, E) :- time_range(F, _), F @[S, E], E - S > 15.
+ * Uses interval bind + assignment + comparison. */
+static MunitResult test_dl_interval_with_filter(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    dl_program_t* prog = dl_program_new();
+
+    /* time_range: [10,20], [30,50], [60,65] — durations 10, 20, 5 */
+    int64_t s0[] = {10, 30, 60};
+    int64_t s1[] = {20, 50, 65};
+    const int64_t* sdata[] = {s0, s1};
+    td_t* tr_tbl = make_dl_table(2, sdata, 3);
+    dl_add_edb(prog, "time_range", tr_tbl, 2);
+
+    /* long_span(S, E, D) :- time_range(F, _), F @[S, E], D = E - S, D > 15.
+     * Variables: F=0, _=1, S=2, E=3, D=4 */
+    dl_rule_t rule;
+    dl_rule_init(&rule, "long_span", 3);
+    dl_rule_head_var(&rule, 0, 2);  /* S */
+    dl_rule_head_var(&rule, 1, 3);  /* E */
+    dl_rule_head_var(&rule, 2, 4);  /* D */
+
+    int b0 = dl_rule_add_atom(&rule, "time_range", 2);
+    dl_body_set_var(&rule, b0, 0, 0);
+    dl_body_set_var(&rule, b0, 1, 1);
+
+    dl_rule_add_interval(&rule, 0, 2, 3);  /* F @[S, E] */
+
+    dl_rule_add_assign(&rule, 4, DL_OP_EQ,
+        dl_expr_binop(OP_SUB, dl_expr_var(3), dl_expr_var(2)));  /* D = E - S */
+
+    dl_rule_add_cmp_const(&rule, DL_CMP_GT, 4, 15);  /* D > 15 */
+    dl_add_rule(prog, &rule);
+
+    int rc = dl_eval(prog);
+    munit_assert_int(rc, ==, 0);
+
+    td_t* res = dl_query(prog, "long_span");
+    munit_assert_ptr_not_null(res);
+    munit_assert_false(TD_IS_ERR(res));
+    /* Only [30,50] has duration 20 > 15 */
+    munit_assert_int(td_table_nrows(res), ==, 1);
+
+    int64_t* s_col = (int64_t*)td_data(td_table_get_col_idx(res, 0));
+    int64_t* e_col = (int64_t*)td_data(td_table_get_col_idx(res, 1));
+    int64_t* d_col = (int64_t*)td_data(td_table_get_col_idx(res, 2));
+    munit_assert_int(s_col[0], ==, 30);
+    munit_assert_int(e_col[0], ==, 50);
+    munit_assert_int(d_col[0], ==, 20);
+
+    td_release(tr_tbl);
+    dl_program_free(prog);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ======================================================================
  * Suite
  * ====================================================================== */
 
@@ -1000,6 +1124,8 @@ static MunitTest tests[] = {
     { "/dl_builtin_before",    test_dl_builtin_before,    NULL, NULL, 0, NULL },
     { "/dl_builtin_duration",  test_dl_builtin_duration,  NULL, NULL, 0, NULL },
     { "/dl_builtin_abs",       test_dl_builtin_abs,       NULL, NULL, 0, NULL },
+    { "/dl_interval_basic",    test_dl_interval_basic,    NULL, NULL, 0, NULL },
+    { "/dl_interval_filter",   test_dl_interval_with_filter, NULL, NULL, 0, NULL },
     { NULL, NULL, NULL, NULL, 0, NULL }
 };
 

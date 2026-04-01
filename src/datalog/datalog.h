@@ -18,6 +18,7 @@
 #define DL_CMP      2   /* comparison:    X < Y, X = c, etc. */
 #define DL_ASSIGN   3   /* assignment:    X = expr */
 #define DL_BUILTIN  4   /* builtin predicate */
+#define DL_INTERVAL 5   /* interval bind: F @[S, E] */
 
 /* ===== Comparison operators (for DL_CMP) ===== */
 #define DL_CMP_EQ   0
@@ -83,6 +84,11 @@ typedef struct {
     int     assign_var;            /* target variable index (for DL_ASSIGN) */
     dl_expr_t *assign_expr;        /* expression tree (for DL_ASSIGN) */
     int     builtin_id;            /* builtin ID (for DL_BUILTIN) */
+    dl_expr_t *cmp_lhs_expr;      /* expression tree for LHS (for DL_CMP with expressions) */
+    dl_expr_t *cmp_rhs_expr;      /* expression tree for RHS (for DL_CMP with expressions) */
+    int     interval_fact_var;     /* fact variable index (for DL_INTERVAL) */
+    int     interval_start_var;    /* start variable index (for DL_INTERVAL) */
+    int     interval_end_var;      /* end variable index (for DL_INTERVAL) */
 } dl_body_t;
 
 /* ===== Datalog rule: head :- body ===== */
@@ -180,6 +186,10 @@ int dl_rule_add_assign(dl_rule_t* rule, int target_var, int op, dl_expr_t* expr)
 /* Add a builtin predicate. Returns body literal index.
  * Arguments are set via dl_body_set_var (same as atoms). */
 int dl_rule_add_builtin(dl_rule_t* rule, int builtin_id, int arity);
+
+/* Add an interval bind: decompose two consecutive columns at the fact variable's
+ * position into start_var and end_var. Returns body literal index. */
+int dl_rule_add_interval(dl_rule_t* rule, int fact_var, int start_var, int end_var);
 
 /* ===== Expression tree builders ===== */
 
