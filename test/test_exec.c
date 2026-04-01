@@ -2316,6 +2316,258 @@ static MunitResult test_exec_str_strlen(const void* params, void* data) {
 
     td_release(result);
     td_graph_free(g);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ---- ANTIJOIN ---- */
+static MunitResult test_exec_antijoin(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    /* Left: id(I64) = {1, 2, 3, 4}, val(I64) = {10, 20, 30, 40} */
+    int64_t lid[] = {1, 2, 3, 4};
+    int64_t lval[] = {10, 20, 30, 40};
+    td_t* lid_v = td_vec_from_raw(TD_I64, lid, 4);
+    td_t* lval_v = td_vec_from_raw(TD_I64, lval, 4);
+    int64_t n_id = td_sym_intern("id", 2);
+    int64_t n_val = td_sym_intern("val", 3);
+    td_t* left = td_table_new(2);
+    left = td_table_add_col(left, n_id, lid_v);
+    left = td_table_add_col(left, n_val, lval_v);
+    td_release(lid_v);
+    td_release(lval_v);
+
+    /* Right: id(I64) = {2, 4} */
+    int64_t rid[] = {2, 4};
+    td_t* rid_v = td_vec_from_raw(TD_I64, rid, 2);
+    td_t* right = td_table_new(1);
+    right = td_table_add_col(right, n_id, rid_v);
+    td_release(rid_v);
+
+    td_graph_t* g = td_graph_new(left);
+    td_op_t* left_op = td_const_table(g, left);
+    td_op_t* right_op = td_const_table(g, right);
+    td_op_t* lk = td_scan(g, "id");
+    td_op_t* lk_arr[] = { lk };
+    td_op_t* rk_arr[] = { lk };
+    td_op_t* aj_op = td_antijoin(g, left_op, lk_arr, right_op, rk_arr, 1);
+
+    td_t* result = td_execute(g, aj_op);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(result->type, ==, TD_TABLE);
+    /* Rows 1,3 should survive (no match in right) */
+    munit_assert_int(td_table_nrows(result), ==, 2);
+    /* Only left columns in output */
+    munit_assert_int(td_table_ncols(result), ==, 2);
+
+    td_t* res_id = td_table_get_col(result, n_id);
+    munit_assert_ptr_not_null(res_id);
+    int64_t* res_data = (int64_t*)td_data(res_id);
+    munit_assert_int(res_data[0], ==, 1);
+    munit_assert_int(res_data[1], ==, 3);
+
+    td_t* res_val = td_table_get_col(result, n_val);
+    munit_assert_ptr_not_null(res_val);
+    int64_t* val_data = (int64_t*)td_data(res_val);
+    munit_assert_int(val_data[0], ==, 10);
+    munit_assert_int(val_data[1], ==, 30);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(left);
+    td_release(right);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ---- ANTIJOIN: empty right → all left rows pass ---- */
+static MunitResult test_exec_antijoin_empty_right(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    int64_t lid[] = {1, 2, 3};
+    td_t* lid_v = td_vec_from_raw(TD_I64, lid, 3);
+    int64_t n_id = td_sym_intern("id", 2);
+    td_t* left = td_table_new(1);
+    left = td_table_add_col(left, n_id, lid_v);
+    td_release(lid_v);
+
+    /* Empty right table */
+    td_t* rid_v = td_vec_new(TD_I64, 0);
+    td_t* right = td_table_new(1);
+    right = td_table_add_col(right, n_id, rid_v);
+    td_release(rid_v);
+
+    td_graph_t* g = td_graph_new(left);
+    td_op_t* left_op = td_const_table(g, left);
+    td_op_t* right_op = td_const_table(g, right);
+    td_op_t* lk = td_scan(g, "id");
+    td_op_t* lk_arr[] = { lk };
+    td_op_t* rk_arr[] = { lk };
+    td_op_t* aj_op = td_antijoin(g, left_op, lk_arr, right_op, rk_arr, 1);
+
+    td_t* result = td_execute(g, aj_op);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(td_table_nrows(result), ==, 3);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(left);
+    td_release(right);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ---- ANTIJOIN: all match → empty result ---- */
+static MunitResult test_exec_antijoin_full_match(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    int64_t lid[] = {1, 2};
+    td_t* lid_v = td_vec_from_raw(TD_I64, lid, 2);
+    int64_t n_id = td_sym_intern("id", 2);
+    td_t* left = td_table_new(1);
+    left = td_table_add_col(left, n_id, lid_v);
+    td_release(lid_v);
+
+    int64_t rid[] = {1, 2, 3};
+    td_t* rid_v = td_vec_from_raw(TD_I64, rid, 3);
+    td_t* right = td_table_new(1);
+    right = td_table_add_col(right, n_id, rid_v);
+    td_release(rid_v);
+
+    td_graph_t* g = td_graph_new(left);
+    td_op_t* left_op = td_const_table(g, left);
+    td_op_t* right_op = td_const_table(g, right);
+    td_op_t* lk = td_scan(g, "id");
+    td_op_t* lk_arr[] = { lk };
+    td_op_t* rk_arr[] = { lk };
+    td_op_t* aj_op = td_antijoin(g, left_op, lk_arr, right_op, rk_arr, 1);
+
+    td_t* result = td_execute(g, aj_op);
+    munit_assert_false(TD_IS_ERR(result));
+    munit_assert_int(td_table_nrows(result), ==, 0);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(left);
+    td_release(right);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ---- ANTIJOIN: multi-column key ---- */
+static MunitResult test_exec_antijoin_multikey(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    int64_t la[] = {1, 1, 2, 2};
+    int64_t lb[] = {10, 20, 10, 20};
+    td_t* la_v = td_vec_from_raw(TD_I64, la, 4);
+    td_t* lb_v = td_vec_from_raw(TD_I64, lb, 4);
+    int64_t n_a = td_sym_intern("a", 1);
+    int64_t n_b = td_sym_intern("b", 1);
+    td_t* left = td_table_new(2);
+    left = td_table_add_col(left, n_a, la_v);
+    left = td_table_add_col(left, n_b, lb_v);
+    td_release(la_v);
+    td_release(lb_v);
+
+    /* Right matches (1,10) and (2,20) */
+    int64_t ra[] = {1, 2};
+    int64_t rb[] = {10, 20};
+    td_t* ra_v = td_vec_from_raw(TD_I64, ra, 2);
+    td_t* rb_v = td_vec_from_raw(TD_I64, rb, 2);
+    td_t* right = td_table_new(2);
+    right = td_table_add_col(right, n_a, ra_v);
+    right = td_table_add_col(right, n_b, rb_v);
+    td_release(ra_v);
+    td_release(rb_v);
+
+    td_graph_t* g = td_graph_new(left);
+    td_op_t* left_op = td_const_table(g, left);
+    td_op_t* right_op = td_const_table(g, right);
+    td_op_t* lk_a = td_scan(g, "a");
+    td_op_t* lk_b = td_scan(g, "b");
+    td_op_t* lk_arr[] = { lk_a, lk_b };
+    td_op_t* rk_arr[] = { lk_a, lk_b };
+    td_op_t* aj_op = td_antijoin(g, left_op, lk_arr, right_op, rk_arr, 2);
+
+    td_t* result = td_execute(g, aj_op);
+    munit_assert_false(TD_IS_ERR(result));
+    /* (1,20) and (2,10) should survive */
+    munit_assert_int(td_table_nrows(result), ==, 2);
+
+    td_t* res_a = td_table_get_col(result, n_a);
+    int64_t* ad = (int64_t*)td_data(res_a);
+    td_t* res_b = td_table_get_col(result, n_b);
+    int64_t* bd = (int64_t*)td_data(res_b);
+    munit_assert_int(ad[0], ==, 1);
+    munit_assert_int(bd[0], ==, 20);
+    munit_assert_int(ad[1], ==, 2);
+    munit_assert_int(bd[1], ==, 10);
+
+    td_release(result);
+    td_graph_free(g);
+    td_release(left);
+    td_release(right);
+    td_sym_destroy();
+    td_heap_destroy();
+    return MUNIT_OK;
+}
+
+/* ---- TABLE INSERT ROW ---- */
+static MunitResult test_table_insert_row(const void* params, void* data) {
+    (void)params; (void)data;
+    td_heap_init();
+    td_sym_init();
+
+    int64_t n_x = td_sym_intern("x", 1);
+    int64_t n_y = td_sym_intern("y", 1);
+    td_t* xv = td_vec_new(TD_I64, 4);
+    td_t* yv = td_vec_new(TD_I64, 4);
+    td_t* tbl = td_table_new(2);
+    tbl = td_table_add_col(tbl, n_x, xv);
+    tbl = td_table_add_col(tbl, n_y, yv);
+    td_release(xv);
+    td_release(yv);
+
+    munit_assert_int(td_table_nrows(tbl), ==, 0);
+    munit_assert_true(td_table_empty(tbl));
+
+    int64_t v1 = 42, v2 = 99;
+    const void* vals[] = { &v1, &v2 };
+    tbl = td_table_insert_row(tbl, vals);
+    munit_assert_false(TD_IS_ERR(tbl));
+    munit_assert_int(td_table_nrows(tbl), ==, 1);
+    munit_assert_int(td_table_count(tbl), ==, 1);
+
+    int64_t v3 = 7, v4 = 13;
+    const void* vals2[] = { &v3, &v4 };
+    tbl = td_table_insert_row(tbl, vals2);
+    munit_assert_false(TD_IS_ERR(tbl));
+    munit_assert_int(td_table_nrows(tbl), ==, 2);
+
+    td_t* col_x = td_table_get_col(tbl, n_x);
+    munit_assert_ptr_not_null(col_x);
+    int64_t* xd = (int64_t*)td_data(col_x);
+    munit_assert_int(xd[0], ==, 42);
+    munit_assert_int(xd[1], ==, 7);
+
+    td_t* col_y = td_table_get_col(tbl, n_y);
+    int64_t* yd = (int64_t*)td_data(col_y);
+    munit_assert_int(yd[0], ==, 99);
+    munit_assert_int(yd[1], ==, 13);
+
     td_release(tbl);
     td_sym_destroy();
     td_heap_destroy();
@@ -3083,6 +3335,11 @@ static MunitTest exec_tests[] = {
     { "/extract",        test_exec_extract,           NULL, NULL, 0, NULL },
     { "/date_trunc",     test_exec_date_trunc,        NULL, NULL, 0, NULL },
     { "/cast",           test_exec_cast,              NULL, NULL, 0, NULL },
+    { "/antijoin",       test_exec_antijoin,          NULL, NULL, 0, NULL },
+    { "/antijoin_empty_right", test_exec_antijoin_empty_right, NULL, NULL, 0, NULL },
+    { "/antijoin_full_match",  test_exec_antijoin_full_match,  NULL, NULL, 0, NULL },
+    { "/antijoin_multikey",    test_exec_antijoin_multikey,    NULL, NULL, 0, NULL },
+    { "/table_insert_row",     test_table_insert_row,          NULL, NULL, 0, NULL },
     { "/graph_dump",     test_graph_dump,             NULL, NULL, 0, NULL },
     { "/str_eq",         test_exec_str_eq,            NULL, NULL, 0, NULL },
     { "/str_ne",         test_exec_str_ne,            NULL, NULL, 0, NULL },

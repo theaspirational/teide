@@ -116,7 +116,9 @@ static const char* opcode_name(uint16_t op) {
         case OP_COSINE_SIM:    return "COSINE_SIM";
         case OP_EUCLIDEAN_DIST:return "EUCLIDEAN_DIST";
         case OP_KNN:           return "KNN";
-        case OP_HNSW_KNN:     return "HNSW_KNN";
+        case OP_HNSW_KNN:      return "HNSW_KNN";
+        case OP_UNION_ALL:     return "UNION_ALL";
+        case OP_ANTIJOIN:      return "ANTIJOIN";
         default:               return "UNKNOWN";
     }
 }
@@ -182,6 +184,10 @@ static void dump_node(FILE* f, td_graph_t* g, td_op_t* node, int depth) {
                 fprintf(f, "(%s, keys=%u)", jt, ext->join.n_join_keys);
             }
             break;
+        case OP_ANTIJOIN:
+            if (ext)
+                fprintf(f, "(keys=%u)", ext->join.n_join_keys);
+            break;
         case OP_GROUP:
             if (ext)
                 fprintf(f, "(keys=%u, aggs=%u)", ext->n_keys, ext->n_aggs);
@@ -231,6 +237,18 @@ static void dump_node(FILE* f, td_graph_t* g, td_op_t* node, int depth) {
             if (ext) {
                 for (uint8_t i = 0; i < ext->sort.n_cols; i++)
                     dump_node(f, g, ext->sort.columns[i], depth + 1);
+            }
+            for (uint8_t i = 0; i < node->arity && i < 2; i++)
+                dump_node(f, g, node->inputs[i], depth + 1);
+            break;
+        case OP_JOIN:
+        case OP_ANTIJOIN:
+            if (ext) {
+                for (uint8_t i = 0; i < ext->join.n_join_keys; i++) {
+                    dump_node(f, g, ext->join.left_keys[i], depth + 1);
+                    if (ext->join.right_keys)
+                        dump_node(f, g, ext->join.right_keys[i], depth + 1);
+                }
             }
             for (uint8_t i = 0; i < node->arity && i < 2; i++)
                 dump_node(f, g, node->inputs[i], depth + 1);

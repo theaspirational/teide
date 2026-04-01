@@ -889,6 +889,15 @@ int64_t     td_table_nrows(td_t* tbl);
 int64_t     td_parted_nrows(td_t* parted_col);
 td_t*       td_table_schema(td_t* tbl);
 
+/* Convenience helpers for Datalog convergence checks */
+static inline int64_t td_table_count(td_t* tbl) { return td_table_nrows(tbl); }
+static inline bool    td_table_empty(td_t* tbl) { return td_table_nrows(tbl) == 0; }
+
+/* Append one row to a flat columnar table. vals[] must have one element per
+ * column, each pointing to a value of the correct type and size.
+ * Returns updated table pointer (may COW/realloc). */
+td_t* td_table_insert_row(td_t* tbl, const void** vals);
+
 /* ===== Morsel Iterator API ===== */
 
 void td_morsel_init(td_morsel_t* m, td_t* vec);
@@ -1059,8 +1068,14 @@ td_op_t* td_hnsw_knn(td_graph_t* g, td_hnsw_t* idx,
 /* Row-union (UNION ALL) of two tables with the same schema.
  * Does NOT deduplicate — equivalent to SQL UNION ALL. */
 td_op_t* td_union_all(td_graph_t* g, td_op_t* left, td_op_t* right);
-/* Anti-join: rows in left with NO matching row in right on all join keys. */
-td_op_t* td_antijoin(td_graph_t* g, td_op_t* left, td_op_t* right);
+
+/* Anti-join: emit left-side rows that have NO match on the right side.
+ * Only left-side columns appear in the output.
+ * Used for: set difference (delta computation), stratified negation. */
+td_op_t* td_antijoin(td_graph_t* g,
+                      td_op_t* left_table, td_op_t** left_keys,
+                      td_op_t* right_table, td_op_t** right_keys,
+                      uint8_t n_keys);
 
 /* CSR / Relationship API */
 td_rel_t* td_rel_build(td_t* from_table, const char* fk_col,

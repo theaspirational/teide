@@ -57,6 +57,7 @@ static void graph_fixup_ext_ptrs(td_graph_t* g, ptrdiff_t delta) {
                     ext->agg_ins[a] = graph_fix_ptr(ext->agg_ins[a], delta);
                 break;
             case OP_JOIN:
+            case OP_ANTIJOIN:
                 for (uint8_t k = 0; k < ext->join.n_join_keys; k++)
                     ext->join.left_keys[k] = graph_fix_ptr(ext->join.left_keys[k], delta);
                 if (ext->join.right_keys) {
@@ -756,6 +757,48 @@ td_op_t* td_join(td_graph_t* g,
         ext->join.right_keys[i] = &g->nodes[rkey_ids[i]];
     ext->join.n_join_keys = n_keys;
     ext->join.join_type = join_type;
+
+    g->nodes[ext->base.id] = ext->base;
+    return &g->nodes[ext->base.id];
+}
+
+td_op_t* td_antijoin(td_graph_t* g,
+                      td_op_t* left_table, td_op_t** left_keys,
+                      td_op_t* right_table, td_op_t** right_keys,
+                      uint8_t n_keys) {
+    /* Save IDs before alloc — realloc may invalidate pointers */
+    uint32_t left_table_id = left_table->id;
+    uint32_t right_table_id = right_table->id;
+    uint32_t lkey_ids[256];
+    uint32_t rkey_ids[256];
+    for (uint8_t i = 0; i < n_keys; i++) {
+        lkey_ids[i] = left_keys[i]->id;
+        rkey_ids[i] = right_keys[i]->id;
+    }
+
+    size_t keys_sz = (size_t)n_keys * sizeof(td_op_t*);
+    td_op_ext_t* ext = graph_alloc_ext_node_ex(g, keys_sz * 2);
+    if (!ext) return NULL;
+
+    left_table = &g->nodes[left_table_id];
+    right_table = &g->nodes[right_table_id];
+
+    ext->base.opcode = OP_ANTIJOIN;
+    ext->base.arity = 2;
+    ext->base.inputs[0] = left_table;
+    ext->base.inputs[1] = right_table;
+    ext->base.out_type = TD_TABLE;
+    ext->base.est_rows = left_table->est_rows;
+
+    char* trail = EXT_TRAIL(ext);
+    ext->join.left_keys = (td_op_t**)trail;
+    for (uint8_t i = 0; i < n_keys; i++)
+        ext->join.left_keys[i] = &g->nodes[lkey_ids[i]];
+    ext->join.right_keys = (td_op_t**)(trail + (size_t)n_keys * sizeof(td_op_t*));
+    for (uint8_t i = 0; i < n_keys; i++)
+        ext->join.right_keys[i] = &g->nodes[rkey_ids[i]];
+    ext->join.n_join_keys = n_keys;
+    ext->join.join_type = 3;  /* sentinel: antijoin */
 
     g->nodes[ext->base.id] = ext->base;
     return &g->nodes[ext->base.id];

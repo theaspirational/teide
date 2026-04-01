@@ -70,8 +70,30 @@ test/test_opt.c             Optimizer pass tests (filter reorder, predicate push
 test/test_store.c           Storage tests (file I/O, sym persistence, col bounds validation)
 test/test_sym.c             Sym table tests (save/load roundtrip, append-only, corruption)
 test/test_str.c             TD_STR string vector tests (slice, concat, hash, comparisons)
-test/test_exec.c            Executor tests (string ops, comparisons, conditionals, joins)
+test/test_exec.c            Executor tests (string ops, comparisons, conditionals, joins, antijoin, insert_row)
 src/vec/vec.c               Vector operations — append, set, concat, slice, TD_STR string vectors with pool
 src/io/csv.{h,c}           CSV loader — mmap, parallel parse, null handling, sym merge
 bench/bench_csv*.c          CSV loading benchmarks (build with -DTEIDE_BENCH=ON)
+src/datalog/datalog.{h,c}  Datalog engine — rule compiler, semi-naive fixpoint, stratified negation
+test/test_datalog.c         Datalog engine tests (11 tests)
+test/test_union_all.c       UNION ALL opcode tests
 ```
+
+## Datalog Engine
+
+Native Datalog evaluation built on Teide's operation DAG infrastructure. Compiles rules into `td_graph_t` DAGs and evaluates to fixpoint.
+
+**Key operations**:
+- `OP_ANTIJOIN` — hash anti-join for set difference and stratified negation
+- `td_table_insert_row()` — single-row append for fact loading
+- `td_table_count()` / `td_table_empty()` — convergence helpers
+
+**API** (`src/datalog/datalog.h`):
+- `dl_program_new()` / `dl_program_free()` — program lifecycle
+- `dl_add_edb()` — register extensional (fact) relations
+- `dl_add_rule()` + rule builder helpers — define Datalog rules
+- `dl_stratify()` — compute stratification for negation
+- `dl_eval()` — semi-naive fixpoint evaluation
+- `dl_query()` — retrieve derived relation after evaluation
+
+**Supports**: multi-rule heads (OR semantics), recursive rules with fixpoint convergence, stratified negation via `OP_ANTIJOIN`, multi-column join keys, constant filters in body atoms, comparison predicates.

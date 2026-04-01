@@ -124,6 +124,38 @@ td_t* td_table_add_col(td_t* tbl, int64_t name_id, td_t* col_vec) {
 }
 
 /* --------------------------------------------------------------------------
+ * td_table_insert_row
+ * -------------------------------------------------------------------------- */
+
+td_t* td_table_insert_row(td_t* tbl, const void** vals) {
+    if (!tbl || TD_IS_ERR(tbl)) return tbl;
+    if (!vals) return TD_ERR_PTR(TD_ERR_TYPE);
+
+    /* COW the table */
+    tbl = td_cow(tbl);
+    if (!tbl || TD_IS_ERR(tbl)) return tbl;
+
+    int64_t ncols = tbl->len;
+    td_t** cols = tbl_col_slots(tbl);
+
+    for (int64_t c = 0; c < ncols; c++) {
+        td_t* col = cols[c];
+        if (!col || TD_IS_ERR(col)) continue;
+
+        td_t* new_col = td_vec_append(col, vals[c]);
+        if (!new_col || TD_IS_ERR(new_col)) return new_col;
+
+        if (new_col != col) {
+            /* vec_append COW'd or grew: drop table's old ref, adopt new */
+            td_release(col);
+            cols[c] = new_col;
+        }
+    }
+
+    return tbl;
+}
+
+/* --------------------------------------------------------------------------
  * td_table_get_col
  * -------------------------------------------------------------------------- */
 
@@ -260,3 +292,4 @@ td_t* td_table_schema(td_t* tbl) {
     if (!tbl || TD_IS_ERR(tbl)) return NULL;
     return *tbl_schema_slot(tbl);
 }
+
